@@ -353,6 +353,7 @@ class VNpyBridge:
             self.event_engine.start()
             self.is_initialized = True
             self._reconnect_attempts = 0
+            self._market_data: Dict[str, Dict[str, Any]] = {}
             logger.info(f"VN.PY Bridge initialized with gateway: {gateway_name}")
             await self.start_connection_monitor()
             return True
@@ -500,6 +501,51 @@ class VNpyBridge:
         return {"success": True, "account_balance": self.settings.get("initial_equity", 10000.0),
                 "currency": "USDT", "timestamp": self.clock.now}
 
+    async def subscribe_market_data(self, symbols: List[str]) -> bool:
+        try:
+            from vnpy.trader.object import SubscribeRequest
+            from vnpy.trader.constant import Exchange
+
+            exchange_map = {
+                "BINANCE": Exchange.BINANCE,
+                "CTP": Exchange.SHFE,
+            }
+            exchange = exchange_map.get(self.gateway_name.upper(), Exchange.BINANCE)
+
+            for symbol in symbols:
+                req = SubscribeRequest(symbol=symbol, exchange=exchange)
+                self.main_engine.subscribe(req, self.gateway_name)
+                self._market_data[symbol] = {
+                    "bid": 0.0,
+                    "ask": 0.0,
+                    "last": 0.0,
+                    "volume": 0.0,
+                    "timestamp": self.clock.now,
+                }
+                logger.info(f"Subscribed to market data for {symbol}")
+
+            return True
+        except Exception as e:
+            logger.error(f"Failed to subscribe to market data: {e}")
+            return False
+
+    async def get_market_data(self, symbol: str) -> Dict[str, Any]:
+        if symbol in self._market_data:
+            return self._market_data[symbol]
+        return {"bid": 0.0, "ask": 0.0, "last": 0.0, "volume": 0.0, "timestamp": self.clock.now}
+
+    async def get_all_market_data(self) -> Dict[str, Dict[str, Any]]:
+        return dict(self._market_data)
+
+    def update_market_data(self, symbol: str, bid: float, ask: float, last: float, volume: float):
+        self._market_data[symbol] = {
+            "bid": bid,
+            "ask": ask,
+            "last": last,
+            "volume": volume,
+            "timestamp": self.clock.now,
+        }
+
     async def shutdown(self):
         logger.info("Shutting down VN.PY Bridge...")
         await self.stop_connection_monitor()
@@ -528,6 +574,11 @@ class MockVNpyBridge:
             logger.info("Initializing Mock VN.PY Bridge...")
             self.is_initialized = True
             self.positions = {"BTCUSDT": 0.0, "ETHUSDT": 0.0}
+            self._market_data: Dict[str, Dict[str, Any]] = {
+                "BTCUSDT": {"bid": 50000.0, "ask": 50001.0, "last": 50000.5, "volume": 100.0, "timestamp": self.clock.now},
+                "ETHUSDT": {"bid": 3000.0, "ask": 3001.0, "last": 3000.5, "volume": 500.0, "timestamp": self.clock.now},
+                "BNBUSDT": {"bid": 400.0, "ask": 401.0, "last": 400.5, "volume": 200.0, "timestamp": self.clock.now},
+            }
             logger.info("Mock VN.PY Bridge initialized")
             return True
         except Exception as e:
@@ -643,3 +694,24 @@ class MockVNpyBridge:
         self.orders.clear()
         self.positions.clear()
         logger.info("Mock VN.PY Bridge shutdown complete")
+
+    async def subscribe_market_data(self, symbols: List[str]) -> bool:
+        for symbol in symbols:
+            if symbol not in self._market_data:
+                self._market_data[symbol] = {
+                    "bid": 0.0,
+                    "ask": 0.0,
+                    "last": 0.0,
+                    "volume": 0.0,
+                    "timestamp": self.clock.now,
+                }
+            logger.info(f"Mock subscribed to market data for {symbol}")
+        return True
+
+    async def get_market_data(self, symbol: str) -> Dict[str, Any]:
+        if symbol in self._market_data:
+            return self._market_data[symbol]
+        return {"bid": 0.0, "ask": 0.0, "last": 0.0, "volume": 0.0, "timestamp": self.clock.now}
+
+    async def get_all_market_data(self) -> Dict[str, Dict[str, Any]]:
+        return dict(self._market_data)
