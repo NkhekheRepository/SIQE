@@ -138,6 +138,16 @@ class Settings:
         except Exception:
             errors.append(f"Invalid TIMEZONE: {self.timezone}")
         
+        if not self.use_mock_execution:
+            if not self.exchange_api_key:
+                errors.append("EXCHANGE_API_KEY is required for live trading (USE_MOCK_EXECUTION=false)")
+            if not self.exchange_api_secret:
+                errors.append("EXCHANGE_API_SECRET is required for live trading (USE_MOCK_EXECUTION=false)")
+            if self.exchange_server not in ("LIVE", "SIMULATOR"):
+                errors.append(f"EXCHANGE_SERVER must be LIVE or SIMULATOR, got: {self.exchange_server}")
+            if self.environment != "production":
+                errors.append("ENVIRONMENT should be 'production' when USE_MOCK_EXECUTION=false")
+        
         return len(errors) == 0, errors
 
 

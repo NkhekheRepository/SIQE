@@ -294,9 +294,15 @@ class VNpyBridge:
                             strength: float, execution_id: str) -> Dict[str, Any]:
         try:
             from vnpy.trader.object import OrderRequest, SubscribeRequest
-            from vnpy.trader.constant import Direction, Offset, OrderType
+            from vnpy.trader.constant import Direction, Offset, OrderType, Exchange
 
-            req = SubscribeRequest(symbol=symbol, exchange="BINANCE")
+            exchange_map = {
+                "BINANCE": Exchange.BINANCE,
+                "CTP": Exchange.SHFE,
+            }
+            exchange = exchange_map.get(self.gateway_name.upper(), Exchange.BINANCE)
+
+            req = SubscribeRequest(symbol=symbol, exchange=exchange)
             self.main_engine.subscribe(req, self.gateway_name)
 
             direction = Direction.LONG if order_type.upper() in ("long", "buy") else Direction.SHORT
@@ -308,7 +314,7 @@ class VNpyBridge:
 
             order_req = OrderRequest(
                 symbol=symbol,
-                exchange="BINANCE",
+                exchange=exchange,
                 direction=direction,
                 offset=Offset.OPEN,
                 type=OrderType.LIMIT,
@@ -330,32 +336,52 @@ class VNpyBridge:
             )
             self.orders[execution_id] = order_state
 
-            await asyncio.sleep(0.5)
+            max_wait = 5.0
+            wait_interval = 0.1
+            waited = 0.0
+            while waited < max_wait:
+                await asyncio.sleep(wait_interval)
+                waited += wait_interval
+                order = self.main_engine.get_order(vt_orderid)
+                if order and order.status.value in ("alltraded", "PART_TRADED", "traded"):
+                    filled_price = order.price if order.price > 0 else price
+                    filled_qty = order.volume if order.volume > 0 else quantity
+
+                    order_state.status = OrderStatus.FILLED
+                    order_state.filled_qty = filled_qty
+                    order_state.avg_fill_price = filled_price
+                    order_state.updated_at = self.clock.now
+
+                    return {
+                        "success": True,
+                        "execution_id": execution_id,
+                        "symbol": symbol,
+                        "order_type": order_type,
+                        "filled_price": filled_price,
+                        "filled_quantity": filled_qty,
+                        "timestamp": self.clock.now,
+                        "status": "FILLED",
+                    }
 
             order = self.main_engine.get_order(vt_orderid)
-            if order and order.status.value == "alltraded":
-                filled_price = order.price if order.price > 0 else price
-                filled_qty = order.volume if order.volume > 0 else quantity
+            order_state.updated_at = self.clock.now
 
-                order_state.status = OrderStatus.FILLED
-                order_state.filled_qty = filled_qty
-                order_state.avg_fill_price = filled_price
-                order_state.updated_at = self.clock.now
-
+            if order and order.status.value in ("nottraded", "pending"):
                 return {
-                    "success": True,
+                    "success": False,
+                    "error": f"Order not filled within timeout: {order.status.value}",
                     "execution_id": execution_id,
-                    "symbol": symbol,
-                    "order_type": order_type,
-                    "filled_price": filled_price,
-                    "filled_quantity": filled_qty,
-                    "timestamp": self.clock.now,
-                    "status": "FILLED",
+                }
+            elif order:
+                return {
+                    "success": False,
+                    "error": f"Order rejected: {order.status.value}",
+                    "execution_id": execution_id,
                 }
             else:
                 return {
                     "success": False,
-                    "error": f"Order not filled: {order.status if order else 'unknown'}",
+                    "error": "Order not found after submission",
                     "execution_id": execution_id,
                 }
 

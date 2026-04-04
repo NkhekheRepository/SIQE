@@ -14,7 +14,7 @@ yfinance>=0.2.0
 ccxt>=4.0.0
 # Optional: HTML report generation with matplotlib
 # matplotlib>=3.7.0
-# Optional: VN.PY for production trading (heavy C dependencies)
-# vnpy==3.9.0
-# vnpy-binance==1.3.0
-# vnpy-ctp==6.7.0
+# VN.PY for production trading
+vnpy==3.9.0
+vnpy-binance==1.3.0
+vnpy-ctp==6.7.0
