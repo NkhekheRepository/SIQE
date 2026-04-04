@@ -140,6 +140,93 @@ class SIQEEngine:
 
         return None
 
+    async def validate_signal(self, signal_data: dict) -> ApprovalResult:
+        """
+        Standalone signal validation for hybrid VN.PY mode.
+        Validates signal against RiskEngine without full pipeline.
+        """
+        try:
+            signal_type_str = signal_data.get('signal_type', 'momentum')
+            try:
+                signal_type = SignalType(signal_type_str)
+            except ValueError:
+                signal_type = SignalType.LONG
+            
+            decision = Decision(
+                decision_id=self.id_gen("decision").next(),
+                signal_id=self.id_gen("signal").next(),
+                symbol=signal_data.get('symbol', 'BTCUSDT'),
+                signal_type=signal_type,
+                strength=signal_data.get('strength', 0.5),
+                price=signal_data.get('price', 0.0),
+                strategy="SiqeFuturesStrategy",
+                ev_score=signal_data.get('ev', 0.0),
+                confidence=signal_data.get('confidence', 0.5),
+                actionable=True,
+                event_seq=self.clock.now,
+                reasoning="hybrid_validation",
+            )
+            return await self.risk_engine.validate_trade(decision)
+        except Exception as e:
+            logger.error(f"Signal validation error: {e}")
+            return ApprovalResult(False, str(e), self.clock.now)
+
+    async def process_trade_result(self, trade_data: dict) -> dict:
+        """
+        Process completed trade from VN.PY strategy.
+        Updates risk state and triggers learning if needed.
+        """
+        try:
+            trade_pnl = trade_data.get('pnl', 0)
+            await self.risk_engine.update_trade_result(trade_pnl)
+            
+            circuit_status = await self.risk_engine.get_circuit_breaker_status()
+            risk_status = {
+                'daily_pnl': self.risk_engine.daily_pnl,
+                'consecutive_losses': self.risk_engine.consecutive_losses,
+                'circuit_breakers': circuit_status,
+            }
+            
+            self.total_trades += 1
+            
+            if self.total_trades > 0 and self.total_trades % self._learning_interval == 0:
+                perf = await self.state_manager.get_trade_statistics()
+                perf['sample_size'] = self.total_trades
+                await self.learning_engine.update_parameters("SiqeFuturesStrategy", perf)
+                logger.info(f"Learning update at trade #{self.total_trades}")
+            
+            return risk_status
+        except Exception as e:
+            logger.error(f"Trade result processing error: {e}")
+            return {'error': str(e)}
+
+    def get_risk_status(self) -> dict:
+        """Get current risk status (sync, for API endpoint)."""
+        try:
+            return {
+                'daily_pnl': self.risk_engine.daily_pnl,
+                'consecutive_losses': self.risk_engine.consecutive_losses,
+                'max_drawdown': self.risk_engine.max_drawdown,
+                'trades_total': self.total_trades,
+                'events_rejected': self.total_events_rejected,
+                'system_state': self.system_state,
+            }
+        except Exception as e:
+            logger.error(f"Risk status error: {e}")
+            return {'error': str(e)}
+
+    async def get_learning_status(self) -> dict:
+        """Get current learning engine status."""
+        try:
+            history = await self.learning_engine.get_learning_history(limit=10)
+            return {
+                'recent_updates': history,
+                'trades_total': self.total_trades,
+            }
+        except Exception as e:
+            logger.error(f"Learning status error: {e}")
+            return {'error': str(e)}
+
     async def _process_events(self):
         while self.running and not self.shutdown_event.is_set():
             try:

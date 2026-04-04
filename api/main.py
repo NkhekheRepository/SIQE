@@ -248,6 +248,59 @@ async def adjust_risk(adjustments: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/risk/status")
+async def get_risk_status():
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        status = engine_instance.get_risk_status()
+        return JSONResponse(content=status)
+    except Exception as e:
+        logger.error(f"Error getting risk status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/learning/status")
+async def get_learning_status():
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        status = await engine_instance.get_learning_status()
+        return JSONResponse(content=status)
+    except Exception as e:
+        logger.error(f"Error getting learning status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/hybrid/status")
+async def get_hybrid_status():
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        risk_status = engine_instance.get_risk_status()
+        learning_status = await engine_instance.get_learning_status()
+        
+        return JSONResponse(content={
+            "engine": {
+                "running": engine_instance.running,
+                "system_state": risk_status.get("system_state", "UNKNOWN"),
+            },
+            "risk": risk_status,
+            "learning": learning_status,
+            "integration": {
+                "vnpy_connected": hasattr(engine_instance, 'execution_adapter') and 
+                                  engine_instance.execution_adapter.is_connected,
+                "learning_interval": engine_instance._learning_interval,
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting hybrid status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/disable_strategy")
 async def disable_strategy(strategy_name: str):
     if engine_instance is None:

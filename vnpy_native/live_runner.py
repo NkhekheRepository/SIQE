@@ -53,6 +53,10 @@ class SiqeLiveRunner:
         self.event_engine: Optional[EventEngine] = None
         self.cta_app: Optional[CtaStrategyApp] = None
         self._running = False
+        
+        self.siqe_engine = None
+        self._trade_count = 0
+        self._learning_interval = 25
 
     def setup(self) -> None:
         """Initialize VN.PY MainEngine, EventEngine, and gateway."""
@@ -163,6 +167,19 @@ class SiqeLiveRunner:
             setting=self.strategy_params,
         )
         logger.info(f"Strategy '{self.strategy_name}' ({class_name}) added for {vt_symbol}")
+        
+        self._strategy_class_name = class_name
+
+    def register_strategy_callbacks(self) -> None:
+        """Register SIQEEngine callbacks on the strategy instance."""
+        cta_engine = self.main_engine.get_engine("CtaStrategy")
+        strategy_instances = cta_engine.strategies
+        
+        for strategy in strategy_instances.values():
+            if strategy.strategy_name == self.strategy_name:
+                strategy.set_trade_callback(self._on_trade)
+                logger.info(f"Registered trade callback for strategy '{self.strategy_name}'")
+                break
 
     def init_strategy(self) -> None:
         """Initialize strategy (loads history, calls on_init)."""
@@ -199,12 +216,101 @@ class SiqeLiveRunner:
             self.main_engine.close()
         logger.info("VN.PY engine closed")
 
+    def set_siqe_engine(self, engine) -> None:
+        """Connect SIQEEngine for risk validation and learning."""
+        self.siqe_engine = engine
+        logger.info("SIQEEngine connected to live runner")
+        if hasattr(engine, 'risk_engine'):
+            logger.info("Risk validation enabled")
+        if hasattr(engine, 'learning_engine'):
+            logger.info("Learning engine enabled")
+
+    def _on_trade(self, trade) -> None:
+        """Handle completed trade - send to SIQEEngine for risk/learning."""
+        self._trade_count += 1
+        
+        if not self.siqe_engine:
+            logger.debug(f"Trade #{self._trade_count}: {trade.direction} {trade.volume} @ {trade.price} (no SIQEEngine)")
+            return
+        
+        try:
+            trade_data = {
+                'trade_id': getattr(trade, 'trade_id', f"live_{self._trade_count}"),
+                'symbol': trade.symbol,
+                'direction': str(trade.direction),
+                'volume': trade.volume,
+                'price': trade.price,
+                'cost': getattr(trade, 'cost', 0),
+                'commission': getattr(trade, 'commission', 0),
+                'time': getattr(trade, 'datetime', None),
+            }
+            
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._process_trade_async(trade_data))
+            else:
+                loop.run_until_complete(self._process_trade_async(trade_data))
+                
+        except Exception as e:
+            logger.error(f"Error processing trade callback: {e}")
+
+    async def _process_trade_async(self, trade_data: Dict[str, Any]) -> None:
+        """Process trade result asynchronously through SIQEEngine pipeline."""
+        try:
+            if hasattr(self.siqe_engine, 'risk_engine') and self.siqe_engine.risk_engine:
+                trade_pnl = trade_data.get('pnl', 0)
+                
+                await self.siqe_engine.risk_engine.update_trade_result(trade_pnl)
+                
+                risk_status = self.siqe_engine.risk_engine.get_circuit_breaker_status()
+                active_breakers = [k for k, v in risk_status.items() if v.get('is_active')]
+                if active_breakers:
+                    logger.warning(f"Circuit breakers active: {active_breakers}")
+                
+                if self._trade_count % self._learning_interval == 0:
+                    logger.info(f"Triggering learning update at trade #{self._trade_count}")
+                    if hasattr(self.siqe_engine, 'state_manager'):
+                        perf = await self.siqe_engine.state_manager.get_trade_statistics()
+                        perf['sample_size'] = self._trade_count
+                    else:
+                        perf = {'sample_size': self._trade_count, 'total_pnl': trade_pnl}
+                    
+                    if hasattr(self.siqe_engine, 'learning_engine'):
+                        await self.siqe_engine.learning_engine.update_parameters(
+                            "SiqeFuturesStrategy", perf
+                        )
+                        logger.info("Learning update completed")
+                    
+            logger.info(f"Trade #{self._trade_count}: {trade_data['direction']} "
+                       f"{trade_data['volume']} @ {trade_data['price']}")
+            
+        except Exception as e:
+            logger.error(f"Error in _process_trade_async: {e}")
+
+    def get_risk_status(self) -> Dict[str, Any]:
+        """Get current risk status from SIQEEngine."""
+        if not self.siqe_engine or not hasattr(self.siqe_engine, 'risk_engine'):
+            return {"status": "no_risk_engine"}
+        
+        risk_engine = self.siqe_engine.risk_engine
+        return {
+            "daily_pnl": risk_engine.daily_pnl,
+            "consecutive_losses": risk_engine.consecutive_losses,
+            "circuit_breakers": risk_engine.get_circuit_breaker_status(),
+            "trades_today": self._trade_count,
+        }
+
     def run(self) -> None:
         """Full lifecycle: setup, connect, add strategy, run until interrupted."""
         self.setup()
         self.connect()
         self.add_strategy()
         self.init_strategy()
+        
+        if self.siqe_engine:
+            self.register_strategy_callbacks()
+        
         self.start_strategy()
 
         self._running = True

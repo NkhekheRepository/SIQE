@@ -130,6 +130,10 @@ class SiqeFuturesStrategy(CtaTemplate):
         self._bo_long_count: int = 0
         self._bo_short_count: int = 0
 
+        # SIQEEngine integration
+        self._trade_callback = None
+        self._risk_check_enabled = True
+
     def on_init(self) -> None:
         """Initialize strategy."""
         self.bg = BarGenerator(self.on_bar)
@@ -223,12 +227,61 @@ class SiqeFuturesStrategy(CtaTemplate):
         self.trade_count += 1
         self._update_margin()
         self.put_event()
+        
+        if self._trade_callback:
+            try:
+                self._trade_callback(trade)
+            except Exception as e:
+                self.write_log(f"Trade callback error: {e}")
 
     def on_order(self, order: OrderData) -> None:
         pass
 
     def on_stop_order(self, stop_order: StopOrder) -> None:
         pass
+
+    # ------------------------------------------------------------------
+    # SIQEEngine Integration
+    # ------------------------------------------------------------------
+    def set_trade_callback(self, callback) -> None:
+        """Set callback for trade execution feedback to SIQEEngine."""
+        self._trade_callback = callback
+        self.write_log("Trade callback registered")
+
+    async def _async_risk_check(self, signal_type: str, volume: float, price: float) -> bool:
+        """Async risk check via SIQEEngine (non-blocking advisory)."""
+        if not getattr(self, '_risk_check_enabled', True):
+            return True
+        
+        risk_check = getattr(self, '_risk_check_callback', None)
+        if not risk_check:
+            return True
+        
+        try:
+            import asyncio
+            signal_data = {
+                'signal_type': signal_type,
+                'volume': volume,
+                'price': price,
+                'symbol': self.vt_symbol,
+            }
+            if asyncio.iscoroutinefunction(risk_check):
+                result = await risk_check(signal_data)
+            else:
+                result = risk_check(signal_data)
+            
+            if result and hasattr(result, 'approved') and not result.approved:
+                self.write_log(f"Risk check rejected: {result.reason}")
+                return False
+            return True
+        except Exception as e:
+            self.write_log(f"Risk check error: {e}")
+            return True
+
+    def set_risk_check_callback(self, callback) -> None:
+        """Set async callback for pre-trade risk validation."""
+        self._risk_check_callback = callback
+        self.write_log("Risk check callback registered")
 
     # ------------------------------------------------------------------
     # Position Sizing with Leverage

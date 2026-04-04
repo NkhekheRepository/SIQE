@@ -112,6 +112,111 @@ def test_configuration():
         print(f"  ✗ Configuration test failed: {e}")
         return False
 
+
+def test_hybrid_integration():
+    """Test hybrid architecture: SIQEEngine + VN.PY integration."""
+    print("\nTesting hybrid architecture integration...")
+    
+    try:
+        from vnpy_native.live_runner import SiqeLiveRunner
+        from core.clock import EventClock
+        from config.settings import Settings
+        
+        runner = SiqeLiveRunner(
+            api_key="",
+            api_secret="",
+            server="SIMULATOR",
+            symbol="btcusdt",
+            market_type="spot",
+            strategy_name="test_hybrid",
+            strategy_params={"leverage": 35},
+        )
+        print("  ✓ SiqeLiveRunner instantiated")
+        
+        assert hasattr(runner, 'siqe_engine'), "Missing siqe_engine attribute"
+        assert hasattr(runner, 'set_siqe_engine'), "Missing set_siqe_engine method"
+        assert hasattr(runner, 'register_strategy_callbacks'), "Missing register_strategy_callbacks"
+        assert hasattr(runner, 'get_risk_status'), "Missing get_risk_status method"
+        assert hasattr(runner, '_on_trade'), "Missing _on_trade callback"
+        print("  ✓ SIQEEngine integration methods present")
+        
+        return True
+    except Exception as e:
+        print(f"  ✗ Hybrid integration test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_siqe_engine_standalone_apis():
+    """Test SIQEEngine standalone APIs for hybrid mode."""
+    print("\nTesting SIQEEngine standalone APIs...")
+    
+    try:
+        import asyncio
+        from main import SIQEEngine
+        
+        engine = SIQEEngine()
+        
+        assert hasattr(engine, 'validate_signal'), "Missing validate_signal method"
+        assert hasattr(engine, 'process_trade_result'), "Missing process_trade_result method"
+        assert hasattr(engine, 'get_risk_status'), "Missing get_risk_status method"
+        assert hasattr(engine, 'get_learning_status'), "Missing get_learning_status method"
+        print("  ✓ SIQEEngine standalone methods present")
+        
+        risk_status = engine.get_risk_status()
+        assert 'daily_pnl' in risk_status, "Risk status missing daily_pnl"
+        assert 'consecutive_losses' in risk_status, "Risk status missing consecutive_losses"
+        print("  ✓ get_risk_status returns correct structure")
+        
+        return True
+    except Exception as e:
+        print(f"  ✗ SIQEEngine standalone API test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_strategy_callbacks():
+    """Test that strategy has callback integration."""
+    print("\nTesting strategy callbacks...")
+    
+    try:
+        from vnpy_native.strategies.siqe_futures_strategy import SiqeFuturesStrategy
+        
+        class MockEngine:
+            capital = 10000
+            def __init__(self):
+                self.capital = 10000
+            def write_log(self, msg, strategy=None):
+                pass
+        
+        engine = MockEngine()
+        strategy = SiqeFuturesStrategy(engine, "test_cb", "btcusdt.GLOBAL", {
+            "leverage": 35
+        })
+        
+        assert hasattr(strategy, '_trade_callback'), "Missing _trade_callback attribute"
+        assert hasattr(strategy, 'set_trade_callback'), "Missing set_trade_callback method"
+        assert hasattr(strategy, '_async_risk_check'), "Missing _async_risk_check method"
+        assert hasattr(strategy, 'set_risk_check_callback'), "Missing set_risk_check_callback method"
+        print("  ✓ Strategy callback methods present")
+        
+        callback_called = []
+        def test_callback(trade):
+            callback_called.append(trade)
+        
+        strategy.set_trade_callback(test_callback)
+        assert strategy._trade_callback is test_callback, "Callback not set correctly"
+        print("  ✓ set_trade_callback works")
+        
+        return True
+    except Exception as e:
+        print(f"  ✗ Strategy callback test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def main():
     print("=" * 50)
     print("SIQE V3 - Integration Test")
@@ -121,6 +226,9 @@ def main():
         test_imports,
         test_strategy_instantiation,
         test_configuration,
+        test_hybrid_integration,
+        test_siqe_engine_standalone_apis,
+        test_strategy_callbacks,
     ]
     
     passed = 0
