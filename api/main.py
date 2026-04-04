@@ -105,6 +105,8 @@ async def health_execution():
         adapter = engine_instance.execution_adapter
         settings = engine_instance.settings
 
+        breaker_status = await engine_instance.risk_engine.get_circuit_breaker_status()
+
         execution_info = {
             "initialized": adapter.is_initialized,
             "connected": adapter.is_connected,
@@ -113,6 +115,7 @@ async def health_execution():
             "exchange_server": settings.exchange_server,
             "pending_orders": len(adapter.pending_orders),
             "executed_trades_count": len(adapter.executed_trades),
+            "circuit_breakers": breaker_status,
         }
 
         if adapter.is_connected:
@@ -309,6 +312,65 @@ async def get_regime_info():
             raise HTTPException(status_code=503, detail="Regime engine not available")
     except Exception as e:
         logger.error(f"Error getting regime info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/emergency/status")
+async def emergency_status():
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        risk_status = await engine_instance.risk_engine.get_risk_status()
+        breaker_status = await engine_instance.risk_engine.get_circuit_breaker_status()
+
+        return JSONResponse(
+            content={
+                "timestamp": engine_instance.clock.now,
+                "circuit_breakers": breaker_status,
+                "risk_metrics": {
+                    "daily_pnl": risk_status["daily_pnl"],
+                    "daily_loss_pct": risk_status["daily_loss_pct"],
+                    "current_equity": risk_status["current_equity"],
+                    "current_drawdown": risk_status["current_drawdown"],
+                    "consecutive_losses": risk_status["consecutive_losses"],
+                },
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error getting emergency status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/emergency/stop")
+async def emergency_stop(reason: str = "Manual emergency stop requested"):
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        result = await engine_instance.risk_engine.emergency_stop(reason)
+        logger.critical(f"EMERGENCY STOP triggered via API: {reason}")
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"Error executing emergency stop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/emergency/resume")
+async def emergency_resume():
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        breaker_status = await engine_instance.risk_engine.get_circuit_breaker_status()
+        if not breaker_status["any_active"]:
+            return JSONResponse(content={"success": False, "message": "No circuit breakers are active"})
+
+        result = await engine_instance.risk_engine.emergency_resume()
+        logger.info("Emergency resume executed via API")
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"Error executing emergency resume: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

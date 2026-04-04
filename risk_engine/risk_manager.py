@@ -2,10 +2,12 @@
 Risk Engine Module
 Enforces risk limits and validates trades against risk parameters.
 Deterministic: uses EventClock instead of datetime.now().
+Includes circuit breakers for production safety.
 """
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from enum import Enum
 
 import numpy as np
 
@@ -13,6 +15,43 @@ from core.clock import EventClock
 from models.trade import Decision, ApprovalResult
 
 logger = logging.getLogger(__name__)
+
+
+class CircuitBreakerType(str, Enum):
+    DAILY_LOSS = "daily_loss"
+    DRAWDOWN = "drawdown"
+    CONSECUTIVE_LOSSES = "consecutive_losses"
+    API_FAILURES = "api_failures"
+    EMERGENCY_STOP = "emergency_stop"
+
+
+class CircuitBreakerState:
+    def __init__(self, breaker_type: CircuitBreakerType):
+        self.breaker_type = breaker_type
+        self.is_active = False
+        self.triggered_at = 0
+        self.trigger_reason = ""
+        self.trigger_count = 0
+
+    def activate(self, clock_time: int, reason: str):
+        self.is_active = True
+        self.triggered_at = clock_time
+        self.trigger_reason = reason
+        self.trigger_count += 1
+
+    def deactivate(self):
+        self.is_active = False
+        self.triggered_at = 0
+        self.trigger_reason = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "type": self.breaker_type.value,
+            "is_active": self.is_active,
+            "triggered_at": self.triggered_at,
+            "trigger_reason": self.trigger_reason,
+            "trigger_count": self.trigger_count,
+        }
 
 
 class RiskEngine:
@@ -36,6 +75,15 @@ class RiskEngine:
         self.trade_count_hour = 0
         self.last_hour_reset = 0
 
+        self._circuit_breakers: Dict[CircuitBreakerType, CircuitBreakerState] = {
+            cb_type: CircuitBreakerState(cb_type)
+            for cb_type in CircuitBreakerType
+        }
+        self._api_failure_count = 0
+        self._max_api_failures = 3
+        self._emergency_stop_reason = ""
+        self._circuit_breaker_history: List[Dict[str, Any]] = []
+
     async def initialize(self) -> bool:
         try:
             logger.info("Initializing Risk Engine...")
@@ -51,6 +99,15 @@ class RiskEngine:
             return ApprovalResult(approved=False, reason="Risk engine not initialized", event_seq=decision.event_seq)
 
         try:
+            active_breakers = self._get_active_circuit_breakers()
+            if active_breakers:
+                breaker_names = [b.breaker_type.value for b in active_breakers]
+                return ApprovalResult(
+                    approved=False,
+                    reason=f"Circuit breaker active: {', '.join(breaker_names)}",
+                    event_seq=decision.event_seq,
+                )
+
             await self._reset_hourly_counter()
 
             if self.trade_count_hour >= self.risk_limits["max_trades_per_hour"]:
@@ -62,6 +119,7 @@ class RiskEngine:
 
             daily_loss_pct = abs(self.daily_pnl) / self.current_equity if self.current_equity > 0 else 0
             if self.daily_pnl < 0 and daily_loss_pct >= self.risk_limits["max_daily_loss"]:
+                self._activate_circuit_breaker(CircuitBreakerType.DAILY_LOSS, f"Daily loss {daily_loss_pct:.2%} >= {self.risk_limits['max_daily_loss']:.2%}")
                 return ApprovalResult(
                     approved=False,
                     reason=f"Daily loss limit exceeded ({daily_loss_pct:.2%} >= {self.risk_limits['max_daily_loss']:.2%})",
@@ -70,6 +128,7 @@ class RiskEngine:
 
             current_drawdown = (self.peak_equity - self.current_equity) / self.peak_equity if self.peak_equity > 0 else 0
             if current_drawdown >= self.risk_limits["max_drawdown"]:
+                self._activate_circuit_breaker(CircuitBreakerType.DRAWDOWN, f"Drawdown {current_drawdown:.2%} >= {self.risk_limits['max_drawdown']:.2%}")
                 return ApprovalResult(
                     approved=False,
                     reason=f"Maximum drawdown exceeded ({current_drawdown:.2%} >= {self.risk_limits['max_drawdown']:.2%})",
@@ -77,6 +136,7 @@ class RiskEngine:
                 )
 
             if self.consecutive_losses >= self.risk_limits["max_consecutive_losses"]:
+                self._activate_circuit_breaker(CircuitBreakerType.CONSECUTIVE_LOSSES, f"Consecutive losses {self.consecutive_losses} >= {self.risk_limits['max_consecutive_losses']}")
                 return ApprovalResult(
                     approved=False,
                     reason=f"Consecutive losses limit exceeded ({self.consecutive_losses} >= {self.risk_limits['max_consecutive_losses']})",
@@ -168,3 +228,53 @@ class RiskEngine:
         logger.info("Shutting down Risk Engine...")
         self.is_initialized = False
         logger.info("Risk Engine shutdown complete")
+
+    def _activate_circuit_breaker(self, breaker_type: CircuitBreakerType, reason: str):
+        breaker = self._circuit_breakers[breaker_type]
+        breaker.activate(self.clock.now, reason)
+        self._circuit_breaker_history.append({
+            "type": breaker_type.value,
+            "reason": reason,
+            "triggered_at": self.clock.now,
+        })
+        logger.warning(f"CIRCUIT BREAKER ACTIVATED: {breaker_type.value} - {reason}")
+
+    def _get_active_circuit_breakers(self) -> List[CircuitBreakerState]:
+        return [b for b in self._circuit_breakers.values() if b.is_active]
+
+    async def emergency_stop(self, reason: str = "Manual emergency stop"):
+        self._emergency_stop_reason = reason
+        self._activate_circuit_breaker(CircuitBreakerType.EMERGENCY_STOP, reason)
+        logger.critical(f"EMERGENCY STOP: {reason}")
+        return {"success": True, "reason": reason, "timestamp": self.clock.now}
+
+    async def emergency_resume(self):
+        for breaker in self._circuit_breakers.values():
+            breaker.deactivate()
+        self._emergency_stop_reason = ""
+        logger.info("Emergency resume: all circuit breakers reset")
+        return {"success": True, "timestamp": self.clock.now}
+
+    async def record_api_failure(self):
+        self._api_failure_count += 1
+        if self._api_failure_count >= self._max_api_failures:
+            self._activate_circuit_breaker(
+                CircuitBreakerType.API_FAILURES,
+                f"API failures: {self._api_failure_count} >= {self._max_api_failures}",
+            )
+        logger.warning(f"API failure recorded ({self._api_failure_count}/{self._max_api_failures})")
+
+    async def record_api_success(self):
+        self._api_failure_count = 0
+
+    async def get_circuit_breaker_status(self) -> Dict[str, Any]:
+        breakers = {bt.value: b.to_dict() for bt, b in self._circuit_breakers.items()}
+        active = [b for b in self._circuit_breakers.values() if b.is_active]
+        return {
+            "circuit_breakers": breakers,
+            "any_active": len(active) > 0,
+            "active_breakers": [b.breaker_type.value for b in active],
+            "emergency_stop_reason": self._emergency_stop_reason,
+            "api_failure_count": self._api_failure_count,
+            "recent_triggers": self._circuit_breaker_history[-10:],
+        }
