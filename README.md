@@ -113,11 +113,12 @@ EventClock (seq) ─────────────────────
 5. [Data Contracts](#data-contracts)
 6. [Configuration (69 Parameters)](#configuration-parameters)
 7. [API Endpoints](#api-endpoints)
-8. [Quick Start](#quick-start)
-9. [Testing](#testing)
-10. [SWOT Analysis](#swot-analysis)
-11. [Docker Deployment](#docker-deployment)
-12. [Project Structure](#project-structure)
+8. [Backtesting Engine](#backtesting-engine)
+9. [Quick Start](#quick-start)
+10. [Testing](#testing)
+11. [SWOT Analysis](#swot-analysis)
+12. [Docker Deployment](#docker-deployment)
+13. [Project Structure](#project-structure)
 
 ---
 
@@ -519,6 +520,194 @@ All 69 parameters grouped by category. Each can be set via environment variable 
 
 ---
 
+## Backtesting Engine
+
+Deterministic historical replay with free market data. Composes all existing SIQE components — no code duplication.
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     BacktestEngine                            │
+│                                                               │
+│  HistoricalDataProvider  ──▶  MarketEvent iterator            │
+│  (yfinance / CCXT / CSV / Parquet)                            │
+│                                                               │
+│  For each event (synchronous, no async queue):                │
+│    Regime → Strategy → EV → Decision → Meta → Risk → Exec     │
+│    └─ FeedbackLoop → RiskEngine.update() → EVEngine.update()  │
+│                                                               │
+│  Every N trades (adaptive mode):                              │
+│    └─ LearningEngine.update_parameters()                      │
+│                                                               │
+│  After all events: PerformanceAnalyzer → BacktestResult        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Data Sources
+
+| Provider | API | Key Required | Timeframes | Use Case |
+|----------|-----|-------------|------------|----------|
+| **yfinance** | Yahoo Finance | No | 1m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo | Stocks, ETFs, indices |
+| **CCXT** | 100+ crypto exchanges | No (public data) | 1m, 5m, 15m, 30m, 1h, 4h, 1d, 1wk | Crypto (BTC, ETH, etc.) |
+| **CSV** | Local files | N/A | Any | Custom data, tick data |
+| **Parquet** | Local files | N/A | Any | Large datasets, fast I/O |
+
+### Slippage Models
+
+| Model | Formula | Best For |
+|-------|---------|----------|
+| **Fixed BPS** | `price ± (bps / 10000) * price` | Liquid markets, small orders |
+| **Linear** | `base_bps + size_penalty + volatility_penalty` | Medium orders, varying volatility |
+| **Volume Impact** | `sigma * sqrt(size / volume)` | Large orders, square-root market impact |
+
+### Performance Metrics
+
+| Metric | Formula | Interpretation |
+|--------|---------|----------------|
+| **Sharpe Ratio** | `mean(returns) / std(returns) * sqrt(bars_per_year)` | > 1.0 good, > 2.0 excellent |
+| **Sortino Ratio** | `mean(returns) / downside_std * sqrt(bars_per_year)` | Penalizes only downside volatility |
+| **Calmar Ratio** | `annualized_return / max_drawdown` | Return per unit of worst drawdown |
+| **Max Drawdown** | `(peak - trough) / peak` | Worst peak-to-trough decline |
+| **Profit Factor** | `gross_profit / gross_loss` | > 1.0 profitable, > 1.5 strong |
+| **Win Rate** | `winning_trades / total_trades` | Context-dependent, needs profit factor |
+| **Overfit Ratio** | `(train_sharpe - test_sharpe) / |train_sharpe|` | < 0.3 acceptable, > 0.5 overfitted |
+
+### Usage
+
+#### Basic backtest (yfinance, daily bars)
+
+```python
+from backtest import BacktestEngine, BacktestSettings, DataProviderType
+
+settings = BacktestSettings(
+    data_provider=DataProviderType.YFINANCE,
+    symbols=["SPY", "QQQ"],
+    start_date="2023-01-01",
+    end_date="2024-01-01",
+    timeframe="1d",
+    initial_equity=10000.0,
+    rng_seed=42,
+)
+
+engine = BacktestEngine(settings)
+result = engine.run()
+
+print(f"Return: {result.metrics.total_return_pct:.2f}%")
+print(f"Sharpe: {result.metrics.sharpe_ratio:.3f}")
+print(f"Max DD: {result.metrics.max_drawdown:.2%}")
+print(f"Trades: {result.metrics.total_trades}")
+```
+
+#### Crypto backtest (CCXT, hourly bars)
+
+```python
+from backtest import BacktestSettings, DataProviderType, SlippageModelType
+
+settings = BacktestSettings(
+    data_provider=DataProviderType.CCXT,
+    ccxt_exchange="binance",
+    ccxt_market_type="spot",
+    symbols=["BTC/USDT", "ETH/USDT"],
+    start_date="2024-01-01",
+    end_date="2024-06-01",
+    timeframe="1h",
+    slippage_model=SlippageModelType.VOLUME_IMPACT,
+    volume_impact_factor=0.1,
+    rng_seed=42,
+)
+
+engine = BacktestEngine(settings)
+result = engine.run()
+```
+
+#### CSV backtest (custom data)
+
+```python
+from backtest import BacktestSettings, DataProviderType
+
+settings = BacktestSettings(
+    data_provider=DataProviderType.CSV,
+    symbols=["MYSTRATEGY"],
+    csv_path="./data/historical/",  # directory of CSV files, or single file path
+    timeframe="1d",
+    rng_seed=42,
+)
+
+engine = BacktestEngine(settings)
+result = engine.run()
+```
+
+#### Adaptive learning mode (walk-forward)
+
+```python
+from backtest import BacktestSettings, LearningMode
+
+settings = BacktestSettings(
+    data_provider=DataProviderType.YFINANCE,
+    symbols=["SPY"],
+    start_date="2020-01-01",
+    end_date="2024-01-01",
+    timeframe="1d",
+    learning_mode=LearningMode.ADAPTIVE,
+    learning_interval=50,
+    rng_seed=42,
+)
+
+engine = BacktestEngine(settings)
+result = engine.run()
+print(f"Parameter updates: {result.parameter_updates}")
+```
+
+#### Walk-forward optimization
+
+```python
+from backtest import WalkForwardOptimizer, BacktestSettings
+
+settings = BacktestSettings(
+    data_provider=DataProviderType.YFINANCE,
+    symbols=["SPY"],
+    start_date="2020-01-01",
+    end_date="2024-01-01",
+    timeframe="1d",
+)
+
+optimizer = WalkForwardOptimizer(
+    base_settings=settings,
+    train_bars=252,   # 1 year of daily bars
+    test_bars=63,     # 1 quarter
+    step_bars=21,     # Roll forward monthly
+)
+
+summary = optimizer.run()
+print(f"Avg test Sharpe: {summary.avg_test_sharpe:.3f}")
+print(f"Avg overfit ratio: {summary.avg_overfit_ratio:.3f}")
+print(f"Consistent windows: {summary.consistent_windows}/{summary.total_windows}")
+```
+
+#### Generate reports
+
+```python
+from backtest import ReportGenerator
+
+reporter = ReportGenerator(output_dir="./backtest_output")
+paths = reporter.generate(result, generate_html=True)
+
+# paths["json"] -> full machine-readable result
+# paths["csv"]  -> trade-by-trade log
+# paths["html"] -> visual dashboard (equity curve, drawdown, trade table)
+```
+
+### Report Output
+
+| Format | Always Generated | Content |
+|--------|-----------------|---------|
+| **JSON** | Yes | All metrics, equity curve, trade log, settings, metadata |
+| **CSV** | Yes | Trade-by-trade: entry/exit, PnL, slippage, strategy, regime |
+| **HTML** | Optional (`generate_html=True`) | Visual dashboard: equity curve, drawdown chart, metrics cards, trade table |
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -596,8 +785,9 @@ curl -X POST http://localhost:8000/resume
 | Data Contracts | `test_data_contract.py` | Type validation | Frozen dataclasses, field validation, enums |
 | Meta Harness | `test_meta_harness.py` | Governance logic | Kill switch, state transitions, overrides |
 | Learning Engine | `test_learning.py` | Parameter learning | Updates, stability guards, rollback |
+| **Backtest** | `test_backtest.py` | **Slippage, metrics, data providers, walk-forward** | **22 tests: slippage models, performance analyzer, CSV provider, window generation** |
 
-**Result: 42/42 tests passing, zero failures.**
+**Result: 64/64 tests passing, zero failures.**
 
 ---
 
@@ -611,10 +801,9 @@ curl -X POST http://localhost:8000/resume
 - **Production-ready infrastructure**: Docker, HEALTHCHECK, non-root user, structured JSON logging
 
 ### Weaknesses
-- **Mock data feeds**: Currently uses simulated market data; real exchange integration requires VN.PY installation
+- **Mock data feeds in live mode**: Currently uses simulated market data for live trading; real exchange integration requires VN.PY installation
 - **Strategy logic is placeholder**: Mean reversion, momentum, breakout strategies use random signal generation (stubs for real logic)
-- **No backtesting engine**: Cannot replay historical data through the pipeline yet
-- **Single-node only**: No distributed deployment or horizontal scaling
+- **No distributed architecture**: Single-node only, no horizontal scaling
 
 ### Opportunities
 - **Real exchange connectivity**: VN.PY supports 100+ gateways (Binance, CTP, IB, etc.)
@@ -714,6 +903,15 @@ siqe/
 │   └── main.py                      # FastAPI REST interface
 ├── infra/
 │   └── logger.py                    # Structured JSON logging
+├── backtest/
+│   ├── __init__.py                  # Public API exports
+│   ├── config.py                    # BacktestSettings, enums
+│   ├── data_provider.py             # HistoricalDataProvider (yfinance, CCXT, CSV, Parquet)
+│   ├── slippage_model.py            # FixedBPS, Linear, VolumeImpact slippage
+│   ├── performance.py               # PerformanceAnalyzer (Sharpe, Sortino, Calmar, etc.)
+│   ├── engine.py                    # BacktestEngine — main orchestrator
+│   ├── walk_forward.py              # WalkForwardOptimizer — train/test windows
+│   └── report.py                    # ReportGenerator — JSON, CSV, HTML output
 ├── tests/
 │   ├── test_pipeline.py
 │   ├── test_determinism.py
@@ -721,7 +919,8 @@ siqe/
 │   ├── test_failure_handling.py
 │   ├── test_data_contract.py
 │   ├── test_meta_harness.py
-│   └── test_learning.py
+│   ├── test_learning.py
+│   └── test_backtest.py             # Slippage, metrics, data providers, walk-forward
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
