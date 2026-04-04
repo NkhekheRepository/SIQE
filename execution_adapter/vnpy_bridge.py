@@ -52,6 +52,11 @@ class ExecutionAdapter:
                 logger.info("Using Real VN.PY Bridge (production mode)")
                 try:
                     self.bridge = VNpyBridge(self.settings, self.clock)
+                    await self.bridge.initialize()
+                    self.is_initialized = True
+                    self.is_connected = True
+                    logger.info("Execution Adapter initialized with real VN.PY")
+                    return True
                 except ImportError:
                     logger.warning("VN.PY not installed, falling back to Mock Bridge")
                     self.bridge = MockVNpyBridge(self.settings, self.clock)
