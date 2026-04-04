@@ -75,17 +75,19 @@ def run_real_data_backtest():
 
     print(f"\n  Total trades: {len(trades)}")
 
-    if trades:
-        wins = [t for t in trades if hasattr(t, "pnl") and t.pnl > 0]
-        losses = [t for t in trades if hasattr(t, "pnl") and t.pnl <= 0]
-        print(f"  Winning trades: {len(wins)}")
-        print(f"  Losing trades: {len(losses)}")
-        if wins:
-            avg_win = sum(t.pnl for t in wins) / len(wins)
-            print(f"  Avg win: {avg_win:.2f}")
-        if losses:
-            avg_loss = sum(t.pnl for t in losses) / len(losses)
-            print(f"  Avg loss: {avg_loss:.2f}")
+    # Use daily results for win/loss since TradeData has no pnl attribute
+    daily_results = getattr(engine, "daily_results", {})
+    if daily_results:
+        profit_days = [d for d in daily_results.values() if d.net_pnl > 0]
+        loss_days = [d for d in daily_results.values() if d.net_pnl < 0]
+        print(f"  Profit days: {len(profit_days)}")
+        print(f"  Loss days: {len(loss_days)}")
+        if profit_days:
+            avg_win = sum(d.net_pnl for d in profit_days) / len(profit_days)
+            print(f"  Avg profit day: {avg_win:.2f}")
+        if loss_days:
+            avg_loss = sum(d.net_pnl for d in loss_days) / len(loss_days)
+            print(f"  Avg loss day: {avg_loss:.2f}")
 
     # Save report
     output_dir = Path("output/backtest_real")

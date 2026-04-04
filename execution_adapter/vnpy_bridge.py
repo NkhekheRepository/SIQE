@@ -337,8 +337,12 @@ class VNpyBridge:
 
             gateway_name = self.gateway_name.upper()
             if gateway_name == "BINANCE":
-                from vnpy_binance import BinanceGateway
-                self.main_engine.add_gateway(BinanceGateway, gateway_name)
+                try:
+                    from vnpy_binance import BinanceSpotGateway
+                    self.main_engine.add_gateway(BinanceSpotGateway, gateway_name)
+                except ImportError:
+                    from vnpy_binance import BinanceGateway
+                    self.main_engine.add_gateway(BinanceGateway, gateway_name)
             elif gateway_name == "CTP":
                 from vnpy_ctp import CtpGateway
                 self.main_engine.add_gateway(CtpGateway, gateway_name)
@@ -347,11 +351,12 @@ class VNpyBridge:
                 return False
 
             gateway_setting = {
-                "key": self.settings.get("exchange_api_key", ""),
-                "secret": self.settings.get("exchange_api_secret", ""),
-                "proxy_host": self.settings.get("proxy_host", ""),
-                "proxy_port": self.settings.get("proxy_port", 0),
-                "server": self.settings.get("exchange_server", "SIMULATOR"),
+                "API Key": self.settings.get("exchange_api_key", ""),
+                "API Secret": self.settings.get("exchange_api_secret", ""),
+                "Server": "TESTNET" if self.settings.get("exchange_server", "SIMULATOR") in ("SIMULATOR", "TESTNET") else "REAL",
+                "Kline Stream": "False",
+                "Proxy Host": self.settings.get("proxy_host", ""),
+                "Proxy Port": self.settings.get("proxy_port", 0),
             }
 
             self.main_engine.connect(gateway_setting, gateway_name)
@@ -376,12 +381,14 @@ class VNpyBridge:
             from vnpy.trader.constant import Direction, Offset, OrderType, Exchange
 
             exchange_map = {
-                "BINANCE": Exchange.BINANCE,
+                "BINANCE": Exchange.GLOBAL,
                 "CTP": Exchange.SHFE,
             }
-            exchange = exchange_map.get(self.gateway_name.upper(), Exchange.BINANCE)
+            exchange = exchange_map.get(self.gateway_name.upper(), Exchange.GLOBAL)
 
-            req = SubscribeRequest(symbol=symbol, exchange=exchange)
+            binance_symbol = symbol.upper() if self.gateway_name.upper() != "BINANCE" else symbol.lower()
+
+            req = SubscribeRequest(symbol=binance_symbol, exchange=exchange)
             self.main_engine.subscribe(req, self.gateway_name)
 
             direction = Direction.LONG if order_type.upper() in ("long", "buy") else Direction.SHORT
@@ -392,7 +399,7 @@ class VNpyBridge:
             quantity = trade_value / price if price > 0 else 0
 
             order_req = OrderRequest(
-                symbol=symbol,
+                symbol=binance_symbol,
                 exchange=exchange,
                 direction=direction,
                 offset=Offset.OPEN,
@@ -512,13 +519,14 @@ class VNpyBridge:
             from vnpy.trader.constant import Exchange
 
             exchange_map = {
-                "BINANCE": Exchange.BINANCE,
+                "BINANCE": Exchange.GLOBAL,
                 "CTP": Exchange.SHFE,
             }
-            exchange = exchange_map.get(self.gateway_name.upper(), Exchange.BINANCE)
+            exchange = exchange_map.get(self.gateway_name.upper(), Exchange.GLOBAL)
 
             for symbol in symbols:
-                req = SubscribeRequest(symbol=symbol, exchange=exchange)
+                binance_symbol = symbol.lower() if self.gateway_name.upper() == "BINANCE" else symbol
+                req = SubscribeRequest(symbol=binance_symbol, exchange=exchange)
                 self.main_engine.subscribe(req, self.gateway_name)
                 self._market_data[symbol] = {
                     "bid": 0.0,
