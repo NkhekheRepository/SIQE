@@ -250,6 +250,77 @@ class VNpyBridge:
         self.main_engine = None
         self.event_engine = None
         self.gateway_name = settings.get("vnpy_gateway", "BINANCE")
+        self._connection_monitor_task = None
+        self._monitor_running = False
+        self._last_connection_check = 0
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 5
+        self._connection_lost_callbacks = []
+
+    def on_connection_lost(self, callback):
+        self._connection_lost_callbacks.append(callback)
+
+    async def _monitor_connection(self):
+        while self._monitor_running and self.is_initialized:
+            try:
+                await asyncio.sleep(30)
+                if not self.is_initialized:
+                    break
+                is_connected = await self._check_connection()
+                if not is_connected:
+                    logger.warning("Connection lost, attempting reconnect...")
+                    self._reconnect_attempts += 1
+                    if self._reconnect_attempts <= self._max_reconnect_attempts:
+                        await self._reconnect()
+                    else:
+                        logger.error(f"Max reconnection attempts ({self._max_reconnect_attempts}) reached")
+                        for callback in self._connection_lost_callbacks:
+                            await callback("Max reconnection attempts reached")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Connection monitor error: {e}")
+                await asyncio.sleep(10)
+
+    async def _check_connection(self) -> bool:
+        try:
+            if not self.main_engine or not self.event_engine:
+                return False
+            account_info = await self.get_account_info()
+            return account_info.get("success", False)
+        except Exception:
+            return False
+
+    async def _reconnect(self) -> bool:
+        try:
+            logger.info(f"Reconnection attempt {self._reconnect_attempts}/{self._max_reconnect_attempts}")
+            await self.shutdown()
+            await asyncio.sleep(2)
+            success = await self.initialize()
+            if success:
+                logger.info("Reconnection successful")
+                self._reconnect_attempts = 0
+            return success
+        except Exception as e:
+            logger.error(f"Reconnection failed: {e}")
+            return False
+
+    async def start_connection_monitor(self):
+        if self._connection_monitor_task is None and not self._monitor_running:
+            self._monitor_running = True
+            self._connection_monitor_task = asyncio.create_task(self._monitor_connection())
+            logger.info("Connection monitor started")
+
+    async def stop_connection_monitor(self):
+        self._monitor_running = False
+        if self._connection_monitor_task:
+            self._connection_monitor_task.cancel()
+            try:
+                await self._connection_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._connection_monitor_task = None
+            logger.info("Connection monitor stopped")
 
     async def initialize(self) -> bool:
         try:
@@ -281,7 +352,9 @@ class VNpyBridge:
             self.main_engine.connect(gateway_setting, gateway_name)
             self.event_engine.start()
             self.is_initialized = True
+            self._reconnect_attempts = 0
             logger.info(f"VN.PY Bridge initialized with gateway: {gateway_name}")
+            await self.start_connection_monitor()
             return True
         except ImportError as e:
             logger.error(f"VN.PY not installed: {e}")
@@ -429,6 +502,7 @@ class VNpyBridge:
 
     async def shutdown(self):
         logger.info("Shutting down VN.PY Bridge...")
+        await self.stop_connection_monitor()
         if self.event_engine:
             self.event_engine.stop()
         if self.main_engine:

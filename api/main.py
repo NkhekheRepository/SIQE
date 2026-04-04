@@ -45,6 +45,89 @@ async def health_check():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/health/detailed")
+async def health_detailed():
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        status = engine_instance.get_status()
+        metrics = engine_instance.get_metrics()
+        settings = engine_instance.settings
+
+        execution_status = "mock" if settings.use_mock_execution else "live"
+        connection_status = "connected" if engine_instance.execution_adapter.is_connected else "disconnected"
+
+        return JSONResponse(
+            content={
+                "status": "healthy" if status["running"] else "degraded",
+                "timestamp": engine_instance.clock.now,
+                "engine": {
+                    "state": status["system_state"],
+                    "running": status["running"],
+                    "uptime_ticks": status["uptime_ticks"],
+                    "total_trades": status["total_trades"],
+                    "events_processed": status["total_events_processed"],
+                    "events_rejected": status["total_events_rejected"],
+                },
+                "execution": {
+                    "mode": execution_status,
+                    "connection": connection_status,
+                    "initialized": engine_instance.execution_adapter.is_initialized,
+                    "gateway": settings.vnpy_gateway,
+                    "exchange_server": settings.exchange_server,
+                },
+                "queue": {
+                    "depth": metrics["queue_depth"],
+                    "capacity": metrics["queue_capacity"],
+                    "utilization_pct": round(metrics["queue_depth"] / metrics["queue_capacity"] * 100, 2) if metrics["queue_capacity"] > 0 else 0,
+                },
+                "resources": {
+                    "memory_mb": round(metrics["memory_mb"], 2),
+                    "peak_memory_mb": round(metrics["peak_memory_mb"], 2),
+                    "active_concurrent": metrics["active_concurrent"],
+                    "max_concurrent": metrics["max_concurrent"],
+                },
+                "latencies": metrics["stage_latencies_avg_ticks"],
+            }
+        )
+    except Exception as e:
+        logger.error(f"Detailed health check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/health/execution")
+async def health_execution():
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        adapter = engine_instance.execution_adapter
+        settings = engine_instance.settings
+
+        execution_info = {
+            "initialized": adapter.is_initialized,
+            "connected": adapter.is_connected,
+            "mode": "mock" if settings.use_mock_execution else "live",
+            "gateway": settings.vnpy_gateway,
+            "exchange_server": settings.exchange_server,
+            "pending_orders": len(adapter.pending_orders),
+            "executed_trades_count": len(adapter.executed_trades),
+        }
+
+        if adapter.is_connected:
+            try:
+                account_info = await adapter.get_account_info()
+                execution_info["account"] = account_info
+            except Exception as e:
+                execution_info["account_error"] = str(e)
+
+        return JSONResponse(content=execution_info)
+    except Exception as e:
+        logger.error(f"Execution health check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/metrics")
 async def get_metrics():
     if engine_instance is None:
