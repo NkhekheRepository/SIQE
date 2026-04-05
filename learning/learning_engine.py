@@ -5,7 +5,8 @@ Deterministic: uses EventClock, stability guard, wires params back to strategies
 """
 import asyncio
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
 
 import numpy as np
 import json
@@ -27,6 +28,22 @@ class LearningEngine:
         self.max_param_change = settings.get("max_param_change", 0.1)
         self.rollback_enabled = settings.get("rollback_enabled", True)
         self.strategy_engine = None
+        self.alert_manager = None  # For Telegram alerts
+        
+        # Adaptive learning configuration
+        self.base_interval = settings.get("learning_interval_default", 15)
+        self.min_interval = settings.get("learning_interval_min", 5)
+        self.max_interval = settings.get("learning_interval_max", 75)
+        
+        # Rollback configuration
+        self.rollback_threshold = settings.get("rollback_threshold", 3)
+        self.rollback_cooldown = settings.get("rollback_cooldown", 300)  # seconds
+        self._consecutive_bad_updates = 0
+        self._last_rollback_time = 0
+        self._max_rollbacks_per_hour = 3
+        self._rollback_count_hour = []
+        
+        # Parameter bounds
         self._param_bounds = {
             "mean_reversion": {
                 "threshold": (0.005, 0.05),
@@ -44,6 +61,15 @@ class LearningEngine:
                 "confirmation_bars": (1, 5),
             },
         }
+        
+        # For adaptive interval calculation
+        self._recent_performance: List[float] = []
+        self._performance_history: List[Dict] = []
+    
+    def set_alert_manager(self, alert_manager) -> None:
+        """Connect alert manager for notifications."""
+        self.alert_manager = alert_manager
+        logger.info("Alert manager connected to Learning Engine")
 
     async def initialize(self) -> bool:
         try:
@@ -67,6 +93,30 @@ class LearningEngine:
                 return {
                     "success": False,
                     "error": f"Insufficient sample size: {sample_size} < {self.min_sample_size}",
+                }
+
+            # Send LEARNING_TRIGGERED alert - learning cycle starting
+            if self.alert_manager:
+                self.alert_manager.learning_triggered(
+                    strategy=strategy_name,
+                    interval=self.base_interval
+                )
+
+            # Check rollback cooldown
+            current_time = datetime.utcnow().timestamp()
+            if current_time - self._last_rollback_time < self.rollback_cooldown:
+                return {
+                    "success": False,
+                    "error": "Rollback cooldown active",
+                    "cooldown_remaining": self.rollback_cooldown - (current_time - self._last_rollback_time),
+                }
+            
+            # Check rollback rate limit
+            self._cleanup_rollback_count()
+            if len(self._rollback_count_hour) >= self._max_rollbacks_per_hour:
+                return {
+                    "success": False,
+                    "error": "Max rollbacks per hour exceeded",
                 }
 
             current_params = await self._get_current_parameters(strategy_name)
@@ -94,6 +144,17 @@ class LearningEngine:
                     strategy_name, current_params, proposed_updates,
                     update_result, performance_data,
                 )
+                
+                # Reset bad update counter on successful update
+                self._consecutive_bad_updates = 0
+                
+                # Send Telegram alert
+                if self.alert_manager:
+                    changes_dict = {
+                        param: (v["old"], v["new"]) 
+                        for param, v in proposed_updates.items()
+                    }
+                    self.alert_manager.parameter_update(strategy_name, changes_dict)
 
             return update_result
 
@@ -253,6 +314,13 @@ class LearningEngine:
             target_version = versions[target_index]
 
             logger.info(f"Rolling back {strategy_name} to version {target_version['version_id']}")
+            
+            # Send rollback alert
+            if self.alert_manager:
+                self.alert_manager.parameter_rollback(
+                    strategy=strategy_name,
+                    reason=f"Rolled back {steps} step(s) to version {target_version['version_id']}"
+                )
 
             return {
                 "success": True,
@@ -303,6 +371,89 @@ class LearningEngine:
 
     async def _save_parameter_versions(self):
         logger.debug("Saving parameter versions (placeholder)")
+    
+    def _cleanup_rollback_count(self) -> None:
+        """Remove rollbacks older than 1 hour."""
+        current_time = datetime.utcnow().timestamp()
+        self._rollback_count_hour = [
+            t for t in self._rollback_count_hour
+            if current_time - t < 3600
+        ]
+    
+    def calculate_adaptive_interval(self, performance_data: Dict[str, Any]) -> int:
+        """
+        Calculate adaptive learning interval based on consistency and Sharpe.
+        
+        Args:
+            performance_data: Performance metrics
+            
+        Returns:
+            Recommended interval in number of trades
+        """
+        sharpe = performance_data.get("sharpe_ratio", 0)
+        consistency = performance_data.get("consistency_score", 0.5)
+        
+        # Base interval adjustment
+        base = self.base_interval
+        
+        # Sharpe adjustment
+        if sharpe > 1.5:
+            base = int(base * 0.6)  # Learn faster when profitable
+        elif sharpe > 0.5:
+            base = int(base * 0.85)
+        elif sharpe < 0:
+            base = int(base * 2.0)  # Learn slower when losing
+        
+        # Consistency adjustment
+        if consistency > 0.8:
+            base = int(base * 0.7)
+        elif consistency < 0.3:
+            base = int(base * 1.5)
+        
+        # Clamp to bounds
+        return max(self.min_interval, min(self.max_interval, base))
+    
+    def should_trigger_rollback(self, performance_data: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Check if rollback should be triggered based on performance degradation.
+        
+        Args:
+            performance_data: Performance metrics
+            
+        Returns:
+            Tuple of (should_rollback, reason)
+        """
+        # Check consecutive bad updates
+        if self._consecutive_bad_updates >= self.rollback_threshold:
+            return True, f"Consecutive bad updates: {self._consecutive_bad_updates}"
+        
+        # Check Sharpe degradation
+        prev_sharpe = self._performance_history[-1].get("sharpe_ratio", 0) if self._performance_history else 0
+        curr_sharpe = performance_data.get("sharpe_ratio", 0)
+        
+        if prev_sharpe > 0 and curr_sharpe < prev_sharpe - 0.5:
+            return True, f"Sharpe dropped: {prev_sharpe:.2f} -> {curr_sharpe:.2f}"
+        
+        # Check drawdown increase
+        prev_dd = self._performance_history[-1].get("drawdown", 0) if self._performance_history else 0
+        curr_dd = performance_data.get("drawdown", 0)
+        
+        if curr_dd > prev_dd + 0.03:
+            return True, f"Drawdown increased: {prev_dd:.2%} -> {curr_dd:.2%}"
+        
+        # Check win rate drop
+        prev_wr = self._performance_history[-1].get("win_rate", 0.5) if self._performance_history else 0.5
+        curr_wr = performance_data.get("win_rate", 0.5)
+        
+        if curr_wr < prev_wr - 0.15:
+            return True, f"Win rate dropped: {prev_wr:.1%} -> {curr_wr:.1%}"
+        
+        return False, ""
+    
+    def record_bad_update(self) -> None:
+        """Record a bad update for rollback tracking."""
+        self._consecutive_bad_updates += 1
+        logger.warning(f"Bad update recorded. Consecutive: {self._consecutive_bad_updates}")
 
     async def get_learning_history(self, limit: int = 50) -> List[Dict[str, Any]]:
         return self.learning_history[-limit:] if self.learning_history else []

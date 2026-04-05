@@ -13,6 +13,7 @@ import numpy as np
 
 from core.clock import EventClock
 from models.trade import Decision, ApprovalResult
+from alerts.alert_manager import AlertManager
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class RiskEngine:
         }
         self.trade_count_hour = 0
         self.last_hour_reset = 0
+        self.alert_manager: Optional[AlertManager] = None
 
         self._circuit_breakers: Dict[CircuitBreakerType, CircuitBreakerState] = {
             cb_type: CircuitBreakerState(cb_type)
@@ -83,6 +85,8 @@ class RiskEngine:
         self._max_api_failures = 3
         self._emergency_stop_reason = ""
         self._circuit_breaker_history: List[Dict[str, Any]] = []
+        self._trade_returns: List[float] = []
+        self._max_returns_history = 1000
 
     async def initialize(self) -> bool:
         try:
@@ -93,6 +97,11 @@ class RiskEngine:
         except Exception as e:
             logger.error(f"Failed to initialize Risk Engine: {e}")
             return False
+
+    def set_alert_manager(self, alert_manager: AlertManager) -> None:
+        """Connect alert manager for notifications."""
+        self.alert_manager = alert_manager
+        logger.info("Alert manager connected to Risk Engine")
 
     async def validate_trade(self, decision: Decision, risk_scaling: Optional[float] = None) -> ApprovalResult:
         if not self.is_initialized:
@@ -120,20 +129,45 @@ class RiskEngine:
             daily_loss_pct = abs(self.daily_pnl) / self.current_equity if self.current_equity > 0 else 0
             if self.daily_pnl < 0 and daily_loss_pct >= self.risk_limits["max_daily_loss"]:
                 self._activate_circuit_breaker(CircuitBreakerType.DAILY_LOSS, f"Daily loss {daily_loss_pct:.2%} >= {self.risk_limits['max_daily_loss']:.2%}")
+                if self.alert_manager:
+                    self.alert_manager.daily_loss(
+                        loss=daily_loss_pct,
+                        limit=self.risk_limits["max_daily_loss"]
+                    )
                 return ApprovalResult(
                     approved=False,
                     reason=f"Daily loss limit exceeded ({daily_loss_pct:.2%} >= {self.risk_limits['max_daily_loss']:.2%})",
                     event_seq=decision.event_seq,
                 )
+            elif self.daily_pnl < 0 and daily_loss_pct >= self.risk_limits["max_daily_loss"] * 0.8:
+                if self.alert_manager:
+                    self.alert_manager.drawdown_warning(
+                        current_dd=daily_loss_pct,
+                        max_dd=self.risk_limits["max_daily_loss"],
+                        alert_type="daily_loss_warning"
+                    )
 
             current_drawdown = (self.peak_equity - self.current_equity) / self.peak_equity if self.peak_equity > 0 else 0
             if current_drawdown >= self.risk_limits["max_drawdown"]:
                 self._activate_circuit_breaker(CircuitBreakerType.DRAWDOWN, f"Drawdown {current_drawdown:.2%} >= {self.risk_limits['max_drawdown']:.2%}")
+                if self.alert_manager:
+                    self.alert_manager.drawdown_warning(
+                        current_dd=current_drawdown,
+                        max_dd=self.risk_limits["max_drawdown"],
+                        alert_type="drawdown_breach"
+                    )
                 return ApprovalResult(
                     approved=False,
                     reason=f"Maximum drawdown exceeded ({current_drawdown:.2%} >= {self.risk_limits['max_drawdown']:.2%})",
                     event_seq=decision.event_seq,
                 )
+            elif current_drawdown >= self.risk_limits["max_drawdown"] * 0.8:
+                if self.alert_manager:
+                    self.alert_manager.drawdown_warning(
+                        current_dd=current_drawdown,
+                        max_dd=self.risk_limits["max_drawdown"],
+                        alert_type="drawdown_warning"
+                    )
 
             if self.consecutive_losses >= self.risk_limits["max_consecutive_losses"]:
                 self._activate_circuit_breaker(CircuitBreakerType.CONSECUTIVE_LOSSES, f"Consecutive losses {self.consecutive_losses} >= {self.risk_limits['max_consecutive_losses']}")
@@ -187,6 +221,12 @@ class RiskEngine:
             else:
                 self.consecutive_losses = 0
 
+            # Track returns for VaR calculation
+            return_pct = profit / self.current_equity if self.current_equity > 0 else 0
+            self._trade_returns.append(return_pct)
+            if len(self._trade_returns) > self._max_returns_history:
+                self._trade_returns = self._trade_returns[-self._max_returns_history:]
+
             logger.debug(f"Updated risk metrics: PnL={profit:.2f}, Daily PnL={self.daily_pnl:.2f}, "
                          f"Equity={self.current_equity:.2f}, Consecutive losses={self.consecutive_losses}")
         except Exception as e:
@@ -224,6 +264,68 @@ class RiskEngine:
             },
         }
 
+    def calculate_var(self, returns: List[float], confidence: float = 0.99) -> float:
+        """
+        Calculate Value at Risk (VaR) using historical method.
+        
+        Args:
+            returns: List of historical returns
+            confidence: Confidence level (default 99%)
+            
+        Returns:
+            VaR as a positive number representing potential loss
+        """
+        if not returns or len(returns) < 10:
+            return 0.0
+        
+        returns_array = np.array(returns)
+        var = np.percentile(returns_array, (1 - confidence) * 100)
+        return abs(var)
+    
+    def calculate_cvar(self, returns: List[float], confidence: float = 0.99) -> float:
+        """
+        Calculate Conditional Value at Risk (CVaR/Expected Shortfall).
+        
+        Args:
+            returns: List of historical returns
+            confidence: Confidence level (default 99%)
+            
+        Returns:
+            CVaR as a positive number representing expected loss beyond VaR
+        """
+        if not returns or len(returns) < 10:
+            return 0.0
+        
+        returns_array = np.array(returns)
+        var = np.percentile(returns_array, (1 - confidence) * 100)
+        cvar = abs(returns_array[returns_array <= var].mean()) if np.any(returns_array <= var) else var
+        return cvar
+    
+    async def get_var_status(self, returns: List[float] = None) -> Dict[str, Any]:
+        """
+        Get VaR/CVaR risk metrics.
+        
+        Args:
+            returns: Optional list of returns to use for calculation
+                    If not provided, uses stored trade returns
+        """
+        if returns is None:
+            returns = self._trade_returns
+        
+        var_99 = self.calculate_var(returns, 0.99)
+        var_95 = self.calculate_var(returns, 0.95)
+        cvar_99 = self.calculate_cvar(returns, 0.99)
+        
+        return {
+            "var_95": var_95,
+            "var_99": var_99,
+            "cvar_99": cvar_99,
+            "confidence_95": f"{var_95:.2%} of equity",
+            "confidence_99": f"{var_99:.2%} of equity",
+            "expected_shortfall_99": f"{cvar_99:.2%} of equity",
+            "sample_size": len(returns),
+        }
+
     async def shutdown(self):
         logger.info("Shutting down Risk Engine...")
         self.is_initialized = False
@@ -238,6 +340,13 @@ class RiskEngine:
             "triggered_at": self.clock.now,
         })
         logger.warning(f"CIRCUIT BREAKER ACTIVATED: {breaker_type.value} - {reason}")
+        
+        # Send Telegram alert
+        if self.alert_manager:
+            self.alert_manager.circuit_breaker(
+                breaker_name=breaker_type.value,
+                reason=reason
+            )
 
     def _get_active_circuit_breakers(self) -> List[CircuitBreakerState]:
         return [b for b in self._circuit_breakers.values() if b.is_active]
@@ -261,6 +370,11 @@ class RiskEngine:
             self._activate_circuit_breaker(
                 CircuitBreakerType.API_FAILURES,
                 f"API failures: {self._api_failure_count} >= {self._max_api_failures}",
+            )
+        elif self.alert_manager:
+            self.alert_manager.api_failure(
+                endpoint="Binance API",
+                error=f"Failure #{self._api_failure_count}/{self._max_api_failures}"
             )
         logger.warning(f"API failure recorded ({self._api_failure_count}/{self._max_api_failures})")
 

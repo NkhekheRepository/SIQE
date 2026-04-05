@@ -35,6 +35,10 @@ class FeedbackLoop:
         self.ev_engine = None
         self.regime_engine = None
         self.strategy_engine = None
+        self.alert_manager = None
+        self.pnl_deviation_threshold = settings.get("pnl_deviation_threshold", 3.0)
+        self._recent_pnls = []
+        self._max_pnl_history = 50
 
     def set_modules(self, learning_engine=None, state_manager=None, risk_engine=None,
                     meta_harness=None, ev_engine=None, regime_engine=None, strategy_engine=None):
@@ -45,6 +49,10 @@ class FeedbackLoop:
         self.ev_engine = ev_engine
         self.regime_engine = regime_engine
         self.strategy_engine = strategy_engine
+
+    def set_alert_manager(self, alert_manager):
+        self.alert_manager = alert_manager
+        logger.info("Alert manager connected to Feedback Loop")
 
     async def initialize(self) -> bool:
         try:
@@ -144,6 +152,25 @@ class FeedbackLoop:
                 "filled_quantity": execution_result.filled_quantity,
                 "trade_type": "successful",
             }
+
+            # Track recent PnLs for anomaly detection
+            self._recent_pnls.append(pnl_decomp.total_pnl)
+            if len(self._recent_pnls) > self._max_pnl_history:
+                self._recent_pnls = self._recent_pnls[-self._max_pnl_history:]
+
+            # Check for anomalous PnL
+            if len(self._recent_pnls) >= 10 and self.alert_manager:
+                expected_pnl = np.mean(self._recent_pnls[:-1]) if len(self._recent_pnls) > 1 else 0
+                if expected_pnl != 0:
+                    std_pnl = np.std(self._recent_pnls[:-1]) if len(self._recent_pnls) > 1 else 1
+                    deviation_sigma = abs(pnl_decomp.total_pnl - expected_pnl) / std_pnl if std_pnl > 0 else 0
+                    
+                    if deviation_sigma > self.pnl_deviation_threshold:
+                        self.alert_manager.anomalous_pnl(
+                            expected_pnl=expected_pnl,
+                            actual_pnl=pnl_decomp.total_pnl,
+                            deviation_sigma=deviation_sigma
+                        )
 
             await self._feed_to_learning_system(feedback_data)
             await self._feed_to_memory_system(feedback_data)

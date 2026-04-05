@@ -1,0 +1,27 @@
+[Unit]
+Description=SIQE Autonomous Trading System
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/siqe
+ExecStart=/usr/bin/python3 scripts/paper_trade_futures.py --name siqe_systemd
+Restart=on-failure
+RestartSec=30
+WatchdogSec=300
+StandardOutput=append:/home/ubuntu/siqe/logs/siqe_systemd.log
+StandardError=append:/home/ubuntu/siqe/logs/siqe_systemd.log
+
+# Environment
+Environment=PYTHONPATH=/home/ubuntu/siqe
+Environment=PYTHONHASHSEED=0
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -27,6 +27,7 @@ from memory.state_manager import StateManager
 from regime.regime_engine import RegimeEngine
 from learning.learning_engine import LearningEngine
 from config.settings import Settings
+from alerts.alert_manager import AlertManager, get_alert_manager
 from infra.logger import setup_logging, InterceptHandler
 from core.clock import EventClock, IDGenerator
 from core.retry import with_retry
@@ -69,6 +70,9 @@ class SIQEEngine:
         self.state_manager = StateManager(self.settings)
         self.regime_engine = RegimeEngine(self.settings, self.clock)
         self.learning_engine = LearningEngine(self.settings, self.clock)
+        
+        # Alert manager
+        self.alert_manager: Optional[AlertManager] = None
 
         self.start_seq = 0
         self.total_trades = 0
@@ -98,7 +102,14 @@ class SIQEEngine:
             await self.feedback_loop.initialize()
             await self.regime_engine.initialize()
             await self.learning_engine.initialize()
-
+            
+            # Initialize and wire alert manager
+            self.alert_manager = get_alert_manager()
+            self.risk_engine.set_alert_manager(self.alert_manager)
+            self.regime_engine.set_alert_manager(self.alert_manager)
+            self.learning_engine.set_alert_manager(self.alert_manager)
+            self.execution_adapter.set_alert_manager(self.alert_manager)
+            
             await self.state_manager.load_state()
             await self.state_manager.restore_state_to_components(
                 risk_engine=self.risk_engine,
@@ -115,6 +126,7 @@ class SIQEEngine:
                 regime_engine=self.regime_engine,
                 strategy_engine=self.strategy_engine,
             )
+            self.feedback_loop.set_alert_manager(self.alert_manager)
 
             logger.info("SIQE V3 Engine initialized successfully")
             return True
@@ -136,6 +148,13 @@ class SIQEEngine:
         except asyncio.QueueFull:
             logger.warning("Event queue full — backpressure, rejecting event")
             self.total_events_rejected += 1
+            if self.alert_manager:
+                max_size = self.event_queue.maxsize
+                current_size = max_size
+                self.alert_manager.queue_full(
+                    queue_size=current_size,
+                    max_size=max_size
+                )
             return None
 
         return None
@@ -347,9 +366,19 @@ class SIQEEngine:
         except asyncio.TimeoutError as e:
             logger.error(f"Pipeline stage timeout: {e}")
             self.total_events_rejected += 1
+            if self.alert_manager:
+                self.alert_manager.pipeline_error(
+                    stage="pipeline_timeout",
+                    error=str(e)
+                )
         except Exception as e:
             logger.error(f"Pipeline error: {e}", exc_info=True)
             self.total_events_rejected += 1
+            if self.alert_manager:
+                self.alert_manager.pipeline_error(
+                    stage="pipeline_execution",
+                    error=str(e)
+                )
 
     def _record_latency(self, stage: str, ticks: int):
         samples = self._stage_latencies[stage]

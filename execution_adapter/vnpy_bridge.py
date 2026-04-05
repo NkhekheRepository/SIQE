@@ -29,7 +29,7 @@ class OrderState:
 
 
 class ExecutionAdapter:
-    def __init__(self, settings, clock: EventClock):
+    def __init__(self, settings, clock: EventClock, event_engine=None, main_engine=None):
         self.settings = settings
         self.clock = clock
         self.is_initialized = False
@@ -39,6 +39,16 @@ class ExecutionAdapter:
         self.is_connected = False
         self.max_retries = settings.get("max_retries", 3)
         self.retry_base_delay = settings.get("retry_base_delay", 0.1)
+        self.alert_manager = None
+        
+        self._provided_event_engine = event_engine
+        self._provided_main_engine = main_engine
+        self.event_engine = event_engine
+        self.main_engine = main_engine
+
+    def set_alert_manager(self, alert_manager):
+        self.alert_manager = alert_manager
+        logger.info("Alert manager connected to Execution Adapter")
 
     async def initialize(self) -> bool:
         try:
@@ -51,7 +61,13 @@ class ExecutionAdapter:
             else:
                 logger.info("Using Real VN.PY Bridge (production mode)")
                 try:
-                    self.bridge = VNpyBridge(self.settings, self.clock)
+                    self.bridge = VNpyBridge(
+                        self.settings, self.clock,
+                        event_engine=self._provided_event_engine,
+                        main_engine=self._provided_main_engine
+                    )
+                    if self.alert_manager:
+                        self.bridge.set_alert_manager(self.alert_manager)
                     await self.bridge.initialize()
                     self.is_initialized = True
                     self.is_connected = True
@@ -246,14 +262,14 @@ class ExecutionAdapter:
 
 
 class VNpyBridge:
-    def __init__(self, settings, clock: EventClock):
+    def __init__(self, settings, clock: EventClock, event_engine=None, main_engine=None):
         self.settings = settings
         self.clock = clock
         self.is_initialized = False
         self.orders: Dict[str, OrderState] = {}
         self.positions: Dict[str, Any] = {}
-        self.main_engine = None
-        self.event_engine = None
+        self.main_engine = main_engine
+        self.event_engine = event_engine
         self.gateway_name = settings.get("vnpy_gateway", "BINANCE")
         self._connection_monitor_task = None
         self._monitor_running = False
@@ -261,6 +277,13 @@ class VNpyBridge:
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 5
         self._connection_lost_callbacks = []
+        self._provided_engines = event_engine is not None and main_engine is not None
+        self.alert_manager = None
+        self._connection_state = "disconnected"
+
+    def set_alert_manager(self, alert_manager):
+        self.alert_manager = alert_manager
+        logger.info("Alert manager connected to VNpyBridge")
 
     def on_connection_lost(self, callback):
         self._connection_lost_callbacks.append(callback)
@@ -272,8 +295,11 @@ class VNpyBridge:
                 if not self.is_initialized:
                     break
                 is_connected = await self._check_connection()
-                if not is_connected:
+                if not is_connected and self._connection_state != "lost":
                     logger.warning("Connection lost, attempting reconnect...")
+                    self._connection_state = "lost"
+                    if self.alert_manager:
+                        self.alert_manager.connection_lost(endpoint=self.gateway_name)
                     self._reconnect_attempts += 1
                     if self._reconnect_attempts <= self._max_reconnect_attempts:
                         await self._reconnect()
@@ -281,6 +307,11 @@ class VNpyBridge:
                         logger.error(f"Max reconnection attempts ({self._max_reconnect_attempts}) reached")
                         for callback in self._connection_lost_callbacks:
                             await callback("Max reconnection attempts reached")
+                elif is_connected and self._connection_state == "lost":
+                    logger.info("Connection restored")
+                    self._connection_state = "connected"
+                    if self.alert_manager:
+                        self.alert_manager.connection_restored(endpoint=self.gateway_name)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -332,8 +363,12 @@ class VNpyBridge:
             from vnpy.event import EventEngine
             from vnpy.trader.engine import MainEngine
 
-            self.event_engine = EventEngine()
-            self.main_engine = MainEngine(self.event_engine)
+            if self._provided_engines and self.event_engine and self.main_engine:
+                logger.info("Using provided EventEngine and MainEngine (shared with SiqeLiveRunner)")
+            else:
+                logger.info("Creating new EventEngine and MainEngine")
+                self.event_engine = EventEngine()
+                self.main_engine = MainEngine(self.event_engine)
 
             gateway_name = self.gateway_name.upper()
             if gateway_name == "BINANCE":
@@ -360,7 +395,8 @@ class VNpyBridge:
             }
 
             self.main_engine.connect(gateway_setting, gateway_name)
-            self.event_engine.start()
+            if not self._provided_engines:
+                self.event_engine.start()
             self.is_initialized = True
             self._reconnect_attempts = 0
             self._market_data: Dict[str, Dict[str, Any]] = {}
@@ -459,9 +495,13 @@ class VNpyBridge:
                     "execution_id": execution_id,
                 }
             elif order:
+                error_msg = f"Order rejected: {order.status.value}"
+                logger.warning(f"ORDER_REJECTED: {symbol} - {error_msg}")
+                if self.alert_manager:
+                    self.alert_manager.order_rejected(reason=error_msg, symbol=symbol)
                 return {
                     "success": False,
-                    "error": f"Order rejected: {order.status.value}",
+                    "error": error_msg,
                     "execution_id": execution_id,
                 }
             else:

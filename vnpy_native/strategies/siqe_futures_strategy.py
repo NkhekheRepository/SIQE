@@ -11,7 +11,7 @@ Adapts SIQE's 3-strategy ensemble for leveraged futures trading with:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 from vnpy_ctastrategy import (
     CtaTemplate,
@@ -24,6 +24,7 @@ from vnpy_ctastrategy import (
     ArrayManager,
 )
 from vnpy.trader.constant import Direction
+import pandas as pd
 
 
 class SiqeFuturesStrategy(CtaTemplate):
@@ -35,6 +36,7 @@ class SiqeFuturesStrategy(CtaTemplate):
     - Margin tracking and alerts
     - Liquidation monitoring
     - Tighter stops for leveraged positions
+    - Phase 8: Directional bias detection & signal attenuation
     """
 
     author = "SIQE"
@@ -74,6 +76,11 @@ class SiqeFuturesStrategy(CtaTemplate):
     regime_vol_low: float = 0.015
     regime_vol_high: float = 0.04
 
+    # --- Phase 8: Directional Bias Detection ---
+    bias_ema50_period: int = 50
+    bias_ema200_period: int = 200
+    bias_threshold_pct: float = 0.01
+
     # --- Parameters & Variables lists ---
     parameters = [
         "mr_boll_period", "mr_boll_dev", "mr_rsi_period",
@@ -85,6 +92,7 @@ class SiqeFuturesStrategy(CtaTemplate):
         "leverage", "risk_pct", "margin_alert_pct", "margin_stop_pct",
         "atr_stop_multiplier", "atr_trailing_multiplier",
         "regime_lookback", "regime_vol_low", "regime_vol_high",
+        "bias_ema50_period", "bias_ema200_period", "bias_threshold_pct",
     ]
 
     variables = [
@@ -94,6 +102,7 @@ class SiqeFuturesStrategy(CtaTemplate):
         "margin_used", "margin_ratio",
         "highest_since_entry", "lowest_since_entry",
         "daily_pnl", "trade_count",
+        "directional_bias", "bias_strength_mult", "position_size_mult",
     ]
 
     def __init__(self, cta_engine, strategy_name: str, vt_symbol: str, setting: dict) -> None:
@@ -126,13 +135,40 @@ class SiqeFuturesStrategy(CtaTemplate):
         self.trade_count: int = 0
         self._trading_active: bool = False
 
+        # Entry tracking for PnL/duration calculation
+        self._entry_timestamp: float = 0.0
+
         # Breakout confirmation
         self._bo_long_count: int = 0
         self._bo_short_count: int = 0
 
+        # Phase 8: Directional bias state
+        self.directional_bias: str = "NEUTRAL"
+        self.bias_strength_mult: float = 1.0
+        self.position_size_mult: float = 1.0
+        self._price_history_closes: list = []
+        
+        # Debug and adaptive sensitivity
+        self._bar_count: int = 0
+        self._bars_without_signal: int = 0
+        self._original_rsi_lower: int = 30
+        self._original_rsi_upper: int = 70
+        self._original_boll_dev: float = 2.0
+        self._relaxation_factor: float = 1.0
+        self._max_relaxation: float = 2.0
+
+        # Alert manager for Telegram alerts
+        self._alert_manager = None
+
         # SIQEEngine integration
         self._trade_callback = None
         self._risk_check_enabled = True
+        self._logged_init = False
+    
+    def set_alert_manager(self, alert_manager) -> None:
+        """Set alert manager for Telegram alerts."""
+        self._alert_manager = alert_manager
+        self.write_log("Alert manager connected to strategy")
 
     def on_init(self) -> None:
         """Initialize strategy."""
@@ -165,12 +201,29 @@ class SiqeFuturesStrategy(CtaTemplate):
     def on_bar(self, bar: BarData) -> None:
         """Main strategy logic on each bar."""
         self.cancel_all()
+        self._bar_count += 1
 
         am = self.am
         am.update_bar(bar)
         if not am.inited:
+            if self._bar_count % 60 == 0:
+                self.write_log(f"ArrayManager warming up: {self._bar_count} bars (need {am.size})")
             return
 
+        # First init debug log
+        if hasattr(self, '_logged_init') and not self._logged_init:
+            self.write_log(f"ArrayManager initialized after {self._bar_count} bars")
+            self._logged_init = True
+            self._original_rsi_lower = self.mr_rsi_lower
+            self._original_rsi_upper = self.mr_rsi_upper
+            self._original_boll_dev = self.mr_boll_dev
+
+        # Phase 8: Update price history for bias detection
+        self._update_price_history(bar.close_price)
+        
+        # Detect directional bias (EMA crossover)
+        self._detect_directional_bias()
+        
         self._detect_regime(am, bar)
         self._compute_mr_signal(am, bar)
         self._compute_mom_signal(am, bar)
@@ -178,47 +231,144 @@ class SiqeFuturesStrategy(CtaTemplate):
 
         if self.margin_ratio >= self.margin_stop_pct:
             self.write_log(f"MARGIN STOP: margin ratio {self.margin_ratio:.1%} >= {self.margin_stop_pct:.1%}")
+            if self._alert_manager:
+                self._alert_manager.margin_critical(
+                    margin_ratio=self.margin_ratio,
+                    threshold=self.margin_stop_pct
+                )
             if self.pos != 0:
                 self._close_position(bar.close_price)
             return
 
-        # 4. Alert on high margin usage
+        # Alert on high margin usage
         if self.margin_ratio >= self.margin_alert_pct:
             self.write_log(f"MARGIN ALERT: {self.margin_ratio:.1%} used")
+            if self._alert_manager:
+                self._alert_manager.margin_warning(
+                    margin_ratio=self.margin_ratio,
+                    threshold=self.margin_alert_pct
+                )
+        
+        # Check liquidation risk (price within 5% of liquidation)
+        if self.pos != 0 and self.liquidation_price > 0:
+            if self.pos > 0:
+                distance_pct = (self.liquidation_price / bar.close_price - 1) * 100 if bar.close_price > 0 else 0
+            else:
+                distance_pct = (bar.close_price / self.liquidation_price - 1) * 100 if self.liquidation_price > 0 else 0
+            
+            if distance_pct > 0 and distance_pct <= 5.0:
+                if self._alert_manager:
+                    self._alert_manager.liquidation_risk(
+                        current_price=bar.close_price,
+                        liquidation_price=self.liquidation_price,
+                        distance_pct=distance_pct
+                    )
 
         ensemble_score = self._ensemble_score()
+        
+        # Track bars without signal for adaptive sensitivity
+        if ensemble_score == 0:
+            self._bars_without_signal += 1
+        else:
+            self._bars_without_signal = 0
+            # Reset relaxation on signal
+            if self._relaxation_factor > 1.0:
+                self.mr_rsi_lower = self._original_rsi_lower
+                self.mr_rsi_upper = self._original_rsi_upper
+                self.mr_boll_dev = self._original_boll_dev
+                self._relaxation_factor = 1.0
+                self.write_log(f"Signal detected - reset thresholds to original")
+        
+        # Adaptive sensitivity: relax thresholds if no signals for too long
+        if self._bars_without_signal > 120 and self._relaxation_factor < self._max_relaxation:
+            self._relaxation_factor = min(self._bars_without_signal / 60, self._max_relaxation)
+            self.mr_rsi_lower = int(self._original_rsi_lower * min(1.0, 35 / self._original_rsi_lower))
+            self.mr_rsi_upper = int(self._original_rsi_upper * max(1.0, 65 / self._original_rsi_upper))
+            self.mr_boll_dev = self._original_boll_dev / self._relaxation_factor
+            if self._bar_count % 30 == 0:
+                self.write_log(f"Adaptive: relaxed RSILower={self.mr_rsi_lower}, RSIUpper={self.mr_rsi_upper}, BollDev={self.mr_boll_dev:.2f} (factor={self._relaxation_factor:.2f})")
+        
+        # Debug logging every 60 bars
+        if self._bar_count % 60 == 0:
+            self.write_log(f"DEBUG: REGIME={self.regime} BIAS={self.directional_bias} MR={self.mr_signal} MOM={self.mom_signal} BO={self.bo_signal} ENS={ensemble_score} NO_SIGNAL={self._bars_without_signal}")
+        
+        # Phase 8: Apply signal attenuation based on bias alignment
+        if ensemble_score != 0:
+            ensemble_score, self.bias_strength_mult = self._apply_bias_attenuation(
+                ensemble_score, self.directional_bias
+            )
+        
+        # Phase 8: Calculate bias-adjusted position size
         volume = self._calculate_volume(bar.close_price)
+        volume = volume * self.position_size_mult
 
         if not self._trading_active:
             return
 
         if self.pos == 0:
+            import time
             if ensemble_score > 0:
                 self.buy(bar.close_price, volume)
                 self.entry_price = bar.close_price
                 self.highest_since_entry = bar.close_price
                 self.lowest_since_entry = bar.close_price
+                self._entry_timestamp = time.time()
                 self._update_liquidation_price(bar.close_price, Direction.LONG)
                 self.write_log(f"LONG {volume} @ {bar.close_price} liq={self.liquidation_price:.1f}")
+                if self._alert_manager:
+                    self._alert_manager.position_opened(
+                        side="LONG",
+                        volume=volume,
+                        entry_price=bar.close_price
+                    )
             elif ensemble_score < 0:
                 self.short(bar.close_price, volume)
                 self.entry_price = bar.close_price
                 self.highest_since_entry = bar.close_price
                 self.lowest_since_entry = bar.close_price
+                self._entry_timestamp = time.time()
                 self._update_liquidation_price(bar.close_price, Direction.SHORT)
                 self.write_log(f"SHORT {volume} @ {bar.close_price} liq={self.liquidation_price:.1f}")
+                if self._alert_manager:
+                    self._alert_manager.position_opened(
+                        side="SHORT",
+                        volume=volume,
+                        entry_price=bar.close_price
+                    )
 
         elif self.pos > 0:
             self.highest_since_entry = max(self.highest_since_entry, bar.high_price)
             if self._should_exit_long(am, bar):
+                import time
+                exit_price = bar.close_price
+                volume = abs(self.pos)
+                pnl = (exit_price - self.entry_price) * volume if self.entry_price > 0 else 0.0
+                duration_min = int((time.time() - self._entry_timestamp) / 60) if self._entry_timestamp > 0 else 0
                 self.sell(bar.close_price, abs(self.pos))
-                self.write_log(f"CLOSE LONG @ {bar.close_price}")
+                self.write_log(f"CLOSE LONG @ {bar.close_price} pnl={pnl:.2f}")
+                if self._alert_manager:
+                    self._alert_manager.position_closed(
+                        pnl=pnl,
+                        side="LONG",
+                        duration_min=duration_min
+                    )
 
         elif self.pos < 0:
             self.lowest_since_entry = min(self.lowest_since_entry, bar.low_price)
             if self._should_exit_short(am, bar):
+                import time
+                exit_price = bar.close_price
+                volume = abs(self.pos)
+                pnl = (self.entry_price - exit_price) * volume if self.entry_price > 0 else 0.0
+                duration_min = int((time.time() - self._entry_timestamp) / 60) if self._entry_timestamp > 0 else 0
                 self.cover(bar.close_price, abs(self.pos))
-                self.write_log(f"CLOSE SHORT @ {bar.close_price}")
+                self.write_log(f"CLOSE SHORT @ {bar.close_price} pnl={pnl:.2f}")
+                if self._alert_manager:
+                    self._alert_manager.position_closed(
+                        pnl=pnl,
+                        side="SHORT",
+                        duration_min=duration_min
+                    )
 
         self.put_event()
 
@@ -350,6 +500,89 @@ class SiqeFuturesStrategy(CtaTemplate):
             self.regime = "VOLATILE"
         else:
             self.regime = "TRENDING"
+
+    # ------------------------------------------------------------------
+    # Phase 8: Directional Bias Detection
+    # ------------------------------------------------------------------
+    def _update_price_history(self, close_price: float) -> None:
+        """Update price history for bias detection."""
+        if not hasattr(self, '_price_history_closes'):
+            self._price_history_closes = []
+        
+        self._price_history_closes.append(close_price)
+        
+        max_history = max(self.bias_ema50_period, self.bias_ema200_period) + 10
+        if len(self._price_history_closes) > max_history:
+            self._price_history_closes = self._price_history_closes[-max_history:]
+
+    def _detect_directional_bias(self) -> None:
+        """Detect directional bias using EMA 50/200 crossover."""
+        if len(self._price_history_closes) < self.bias_ema200_period + 10:
+            self.directional_bias = "NEUTRAL"
+            self.bias_strength_mult = 1.0
+            self.position_size_mult = 1.0
+            return
+        
+        closes = pd.Series(self._price_history_closes)
+        
+        ema50 = closes.ewm(span=self.bias_ema50_period, adjust=False).mean()
+        ema200 = closes.ewm(span=self.bias_ema200_period, adjust=False).mean()
+        
+        diff_pct = (ema50.iloc[-1] - ema200.iloc[-1]) / ema200.iloc[-1]
+        
+        if diff_pct > self.bias_threshold_pct:
+            self.directional_bias = "BULL"
+        elif diff_pct < -self.bias_threshold_pct:
+            self.directional_bias = "BEAR"
+        else:
+            self.directional_bias = "NEUTRAL"
+        
+        self._update_bias_multipliers()
+
+    def _update_bias_multipliers(self) -> None:
+        """Update position size multiplier based on directional bias."""
+        if self.directional_bias == "NEUTRAL":
+            self.position_size_mult = 0.75
+        elif self.directional_bias == "BULL":
+            self.position_size_mult = 1.0
+        elif self.directional_bias == "BEAR":
+            self.position_size_mult = 0.75
+
+    def _apply_bias_attenuation(self, ensemble_score: int, bias: str) -> Tuple[int, float]:
+        """
+        Apply signal strength attenuation based on bias alignment.
+        
+        Returns: (adjusted_score, strength_multiplier)
+        - BEAR + LONG: 0.5x (attenuated)
+        - BEAR + SHORT: 1.25x (amplified)
+        - BULL + LONG: 1.25x (amplified)
+        - BULL + SHORT: 0.25x (heavily attenuated)
+        
+        Note: Uses sign-preserving logic so attenuated signals still trade,
+        just with reduced conviction.
+        """
+        if bias == "NEUTRAL":
+            return ensemble_score, 1.0
+        
+        strength_mult = 1.0
+        
+        if bias == "BEAR":
+            if ensemble_score > 0:
+                strength_mult = 0.5
+            else:
+                strength_mult = 1.25
+        elif bias == "BULL":
+            if ensemble_score > 0:
+                strength_mult = 1.25
+            else:
+                strength_mult = 0.25
+        
+        adjusted_score = ensemble_score if strength_mult >= 1.0 else int(ensemble_score * strength_mult) + 1 if ensemble_score > 0 else int(ensemble_score * strength_mult) - 1 if ensemble_score < 0 else 0
+        
+        if ensemble_score != 0 and adjusted_score == 0:
+            adjusted_score = ensemble_score
+        
+        return adjusted_score, strength_mult
 
     # ------------------------------------------------------------------
     # Mean Reversion Sub-Strategy
