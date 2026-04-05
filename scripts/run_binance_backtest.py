@@ -228,8 +228,8 @@ class BacktestRunner:
         self.settings.max_drawdown = 0.15
         self.settings.max_daily_loss = 0.05
         self.settings.leverage = 35
-        self.settings.stop_multiplier = 1.5
-        self.settings.tp_multiplier = 2.5
+        self.settings.stop_multiplier = 0.5
+        self.settings.tp_multiplier = 3.0
         self.settings.max_bars_held = 8
         self.fetcher = BinanceDataFetcher()
         self.report_gen = ReportGenerator(output_dir="./backtest_output/binance_futures")

@@ -415,7 +415,7 @@ class MomentumStrategy(BaseStrategy):
                     strength = (macd_signal.strength + adx_signal.strength) / 2
                     reason = f"Momentum SHORT: MACD bearish crossover, ADX={adx_value:.1f} ({trend})"
             
-            if signal_type and strength >= 0.4:
+            if signal_type and strength >= 0.3:
                 allow, strength_mult = self.filter_signal_by_bias(signal_type, bias)
                 if not allow:
                     continue
@@ -572,7 +572,7 @@ class VolatilityBreakoutStrategy(BaseStrategy):
                     strength = min(volatility_ratio / 3, 0.9)
                     reason = f"Volatility breakdown SHORT: ratio={volatility_ratio:.2f}, ATR=${atr_value:.2f}"
             
-            if signal_type and strength >= 0.25:
+            if signal_type and strength >= 0.3:
                 allow, strength_mult = self.filter_signal_by_bias(signal_type, bias)
                 if not allow:
                     continue
@@ -643,7 +643,7 @@ class TrendFollowingStrategy(BaseStrategy):
                 strength = min(abs(ema_slow - ema_fast) / ema_slow * 5, 0.9)
                 reason = f"EMA bearish crossover: fast={ema_fast:.2f}, slow={ema_slow:.2f}"
             
-            if signal_type and strength >= 0.25:
+            if signal_type and strength >= 0.3:
                 allow, strength_mult = self.filter_signal_by_bias(signal_type, bias)
                 if not allow:
                     continue

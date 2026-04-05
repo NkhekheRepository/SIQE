@@ -25,7 +25,9 @@ class TradeRecord:
     entry_seq: int
     exit_seq: int
     strategy: str
+    direction: str = ""  # LONG or SHORT
     regime: str = ""
+    exit_reason: str = ""
 
 
 @dataclass
@@ -56,6 +58,16 @@ class PerformanceMetrics:
     pnl_by_symbol: Dict[str, float] = field(default_factory=dict)
     pnl_by_strategy: Dict[str, float] = field(default_factory=dict)
     pnl_by_regime: Dict[str, float] = field(default_factory=dict)
+    pnl_by_direction: Dict[str, float] = field(default_factory=dict)
+    pnl_by_exit_reason: Dict[str, float] = field(default_factory=dict)
+    trades_by_regime: Dict[str, int] = field(default_factory=dict)
+    trades_by_strategy: Dict[str, int] = field(default_factory=dict)
+    trades_by_direction: Dict[str, int] = field(default_factory=dict)
+    avg_entry_to_stop_pct: float = 0.0
+    avg_entry_to_tp_pct: float = 0.0
+    avg_realized_stop_pct: float = 0.0
+    avg_realized_tp_pct: float = 0.0
+    avg_bars_held: float = 0.0
     avg_slippage_bps: float = 0.0
     total_slippage: float = 0.0
     initial_equity: float = 0.0
@@ -91,82 +103,117 @@ class PerformanceAnalyzer:
         self._bars_analyzed = count
 
     def compute(self) -> PerformanceMetrics:
-        metrics = PerformanceMetrics()
-        metrics.initial_equity = self.initial_equity
-        metrics.events_processed = self._events_processed
-        metrics.events_rejected = self._events_rejected
-        metrics.bars_analyzed = self._bars_analyzed
+        try:
+            metrics = PerformanceMetrics()
+            metrics.initial_equity = self.initial_equity
+            metrics.events_processed = self._events_processed
+            metrics.events_rejected = self._events_rejected
+            metrics.bars_analyzed = self._bars_analyzed
 
-        equity = np.array(self._equity_points, dtype=float)
-        metrics.equity_curve = equity.tolist()
-        metrics.final_equity = equity[-1] if len(equity) > 0 else self.initial_equity
+            equity = np.array(self._equity_points, dtype=float)
+            metrics.equity_curve = equity.tolist()
+            metrics.final_equity = equity[-1] if len(equity) > 0 else self.initial_equity
 
-        returns = np.diff(equity) / equity[:-1] if len(equity) > 1 else np.array([0.0])
-        returns = np.nan_to_num(returns, nan=0.0, posinf=0.0, neginf=0.0)
-        metrics.daily_returns = returns.tolist()
+            returns = np.diff(equity) / equity[:-1] if len(equity) > 1 else np.array([0.0])
+            returns = np.nan_to_num(returns, nan=0.0, posinf=0.0, neginf=0.0)
+            metrics.daily_returns = returns.tolist()
 
-        if len(self._trades) == 0:
-            metrics.total_return_pct = (metrics.final_equity - self.initial_equity) / self.initial_equity * 100
+            if len(self._trades) == 0:
+                metrics.total_return_pct = (metrics.final_equity - self.initial_equity) / self.initial_equity * 100
+                metrics.sharpe_ratio = self._calc_sharpe(returns)
+                metrics.sortino_ratio = self._calc_sortino(returns)
+                metrics.max_drawdown, metrics.max_drawdown_duration = self._calc_max_drawdown(equity)
+                metrics.drawdown_curve = self._calc_drawdown_curve(equity)
+                return metrics
+
+            trades = self._trades
+            pnls = np.array([t.pnl for t in trades])
+
+            metrics.total_trades = len(trades)
+            metrics.winning_trades = int(np.sum(pnls > 0))
+            metrics.losing_trades = int(np.sum(pnls <= 0))
+            metrics.win_rate = metrics.winning_trades / metrics.total_trades if metrics.total_trades > 0 else 0.0
+
+            wins = pnls[pnls > 0]
+            losses = pnls[pnls <= 0]
+            metrics.avg_win = float(np.mean(wins)) if len(wins) > 0 else 0.0
+            metrics.avg_loss = float(np.mean(losses)) if len(losses) > 0 else 0.0
+
+            gross_profit = float(np.sum(wins)) if len(wins) > 0 else 0.0
+            gross_loss = abs(float(np.sum(losses))) if len(losses) > 0 else 0.0
+            metrics.profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf") if gross_profit > 0 else 0.0
+
+            metrics.total_pnl = float(np.sum(pnls))
+            metrics.total_return_pct = metrics.total_pnl / self.initial_equity * 100
+
             metrics.sharpe_ratio = self._calc_sharpe(returns)
             metrics.sortino_ratio = self._calc_sortino(returns)
             metrics.max_drawdown, metrics.max_drawdown_duration = self._calc_max_drawdown(equity)
             metrics.drawdown_curve = self._calc_drawdown_curve(equity)
+            metrics.avg_drawdown = float(np.mean(metrics.drawdown_curve)) if metrics.drawdown_curve else 0.0
+
+            if len(equity) > 1:
+                peak = equity[0]
+                calmar_dd = 0.0
+                for eq in equity:
+                    peak = max(peak, eq)
+                    dd = (peak - eq) / peak if peak > 0 else 0
+                    calmar_dd = max(calmar_dd, dd)
+                annualized_return = (metrics.final_equity / self.initial_equity) ** (self.bars_per_year / max(1, len(equity))) - 1
+                metrics.calmar_ratio = annualized_return / calmar_dd if calmar_dd > 0 else 0.0
+
+            durations = [t.exit_seq - t.entry_seq for t in trades if t.exit_seq > t.entry_seq]
+            metrics.avg_trade_duration = float(np.mean(durations)) if durations else 0.0
+
+            metrics.max_consecutive_wins = self._max_consecutive(pnls > 0)
+            metrics.max_consecutive_losses = self._max_consecutive(pnls <= 0)
+
+            total_slip = sum(abs(t.slippage) * t.size for t in trades)
+            metrics.total_slippage = total_slip
+            avg_notional = np.mean([t.entry_price * t.size for t in trades]) if trades else 1.0
+            metrics.avg_slippage_bps = (total_slip / avg_notional * 10000) if avg_notional > 0 and len(trades) > 0 else 0.0
+
+            stops_tp_dists = []
+            realized_exits = []
+            bars_held_list = []
+
+            for t in trades:
+                metrics.pnl_by_symbol[t.symbol] = metrics.pnl_by_symbol.get(t.symbol, 0.0) + t.pnl
+                metrics.pnl_by_strategy[t.strategy] = metrics.pnl_by_strategy.get(t.strategy, 0.0) + t.pnl
+                if t.regime:
+                    metrics.pnl_by_regime[t.regime] = metrics.pnl_by_regime.get(t.regime, 0.0) + t.pnl
+                    metrics.trades_by_regime[t.regime] = metrics.trades_by_regime.get(t.regime, 0) + 1
+                if t.direction:
+                    metrics.pnl_by_direction[t.direction] = metrics.pnl_by_direction.get(t.direction, 0.0) + t.pnl
+                    metrics.trades_by_direction[t.direction] = metrics.trades_by_direction.get(t.direction, 0) + 1
+                if t.exit_reason:
+                    metrics.pnl_by_exit_reason[t.exit_reason] = metrics.pnl_by_exit_reason.get(t.exit_reason, 0.0) + t.pnl
+                metrics.trades_by_strategy[t.strategy] = metrics.trades_by_strategy.get(t.strategy, 0) + 1
+
+                # Aggregate exit reason stats
+                if hasattr(t, 'entry_to_stop_pct'):
+                    stops_tp_dists.append(t.entry_to_stop_pct)
+                if hasattr(t, 'realized_stop_pct') and t.realized_stop_pct > 0:
+                    realized_exits.append(('stop', t.realized_stop_pct))
+                if hasattr(t, 'realized_tp_pct') and t.realized_tp_pct > 0:
+                    realized_exits.append(('tp', t.realized_tp_pct))
+                if hasattr(t, 'bars_held'):
+                    bars_held_list.append(t.bars_held)
+
+            if stops_tp_dists:
+                metrics.avg_entry_to_stop_pct = float(np.mean(stops_tp_dists))
+            if realized_exits:
+                stop_rets = [r[1] for r in realized_exits if r[0] == 'stop']
+                tp_rets = [r[1] for r in realized_exits if r[0] == 'tp']
+                metrics.avg_realized_stop_pct = float(np.mean(stop_rets)) if stop_rets else 0.0
+                metrics.avg_realized_tp_pct = float(np.mean(tp_rets)) if tp_rets else 0.0
+            if bars_held_list:
+                metrics.avg_bars_held = float(np.mean(bars_held_list))
+
             return metrics
-
-        trades = self._trades
-        pnls = np.array([t.pnl for t in trades])
-
-        metrics.total_trades = len(trades)
-        metrics.winning_trades = int(np.sum(pnls > 0))
-        metrics.losing_trades = int(np.sum(pnls <= 0))
-        metrics.win_rate = metrics.winning_trades / metrics.total_trades if metrics.total_trades > 0 else 0.0
-
-        wins = pnls[pnls > 0]
-        losses = pnls[pnls <= 0]
-        metrics.avg_win = float(np.mean(wins)) if len(wins) > 0 else 0.0
-        metrics.avg_loss = float(np.mean(losses)) if len(losses) > 0 else 0.0
-
-        gross_profit = float(np.sum(wins)) if len(wins) > 0 else 0.0
-        gross_loss = abs(float(np.sum(losses))) if len(losses) > 0 else 0.0
-        metrics.profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf") if gross_profit > 0 else 0.0
-
-        metrics.total_pnl = float(np.sum(pnls))
-        metrics.total_return_pct = metrics.total_pnl / self.initial_equity * 100
-
-        metrics.sharpe_ratio = self._calc_sharpe(returns)
-        metrics.sortino_ratio = self._calc_sortino(returns)
-        metrics.max_drawdown, metrics.max_drawdown_duration = self._calc_max_drawdown(equity)
-        metrics.drawdown_curve = self._calc_drawdown_curve(equity)
-        metrics.avg_drawdown = float(np.mean(metrics.drawdown_curve)) if metrics.drawdown_curve else 0.0
-
-        if len(equity) > 1:
-            peak = equity[0]
-            calmar_dd = 0.0
-            for eq in equity:
-                peak = max(peak, eq)
-                dd = (peak - eq) / peak if peak > 0 else 0
-                calmar_dd = max(calmar_dd, dd)
-            annualized_return = (metrics.final_equity / self.initial_equity) ** (self.bars_per_year / max(1, len(equity))) - 1
-            metrics.calmar_ratio = annualized_return / calmar_dd if calmar_dd > 0 else 0.0
-
-        durations = [t.exit_seq - t.entry_seq for t in trades if t.exit_seq > t.entry_seq]
-        metrics.avg_trade_duration = float(np.mean(durations)) if durations else 0.0
-
-        metrics.max_consecutive_wins = self._max_consecutive(pnls > 0)
-        metrics.max_consecutive_losses = self._max_consecutive(pnls <= 0)
-
-        total_slip = sum(abs(t.slippage) * t.size for t in trades)
-        metrics.total_slippage = total_slip
-        avg_notional = np.mean([t.entry_price * t.size for t in trades]) if trades else 1.0
-        metrics.avg_slippage_bps = (total_slip / avg_notional * 10000) if avg_notional > 0 and len(trades) > 0 else 0.0
-
-        for t in trades:
-            metrics.pnl_by_symbol[t.symbol] = metrics.pnl_by_symbol.get(t.symbol, 0.0) + t.pnl
-            metrics.pnl_by_strategy[t.strategy] = metrics.pnl_by_strategy.get(t.strategy, 0.0) + t.pnl
-            if t.regime:
-                metrics.pnl_by_regime[t.regime] = metrics.pnl_by_regime.get(t.regime, 0.0) + t.pnl
-
-        return metrics
+        except Exception as e:
+            print(f"Error computing metrics: {e}")
+            return PerformanceMetrics()
 
     def _calc_sharpe(self, returns: np.ndarray) -> float:
         if len(returns) < 2 or np.std(returns) == 0:

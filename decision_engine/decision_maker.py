@@ -39,7 +39,15 @@ class DecisionEngine:
                 return None
 
             min_ev = self.settings.get("min_ev_threshold", 0.0)
-            actionable_trades = [ev for ev in ev_results if ev.ev_score >= min_ev]
+            preferred_direction = self.settings.get("prefer_direction", "BOTH")
+            
+            # Filter by preferred direction
+            if preferred_direction == "SHORT":
+                actionable_trades = [ev for ev in ev_results if ev.ev_score >= min_ev and ev.signal_type == SignalType.SHORT]
+            elif preferred_direction == "LONG":
+                actionable_trades = [ev for ev in ev_results if ev.ev_score >= min_ev and ev.signal_type == SignalType.LONG]
+            else:
+                actionable_trades = [ev for ev in ev_results if ev.ev_score >= min_ev]
 
             if not actionable_trades:
                 logger.debug(f"No actionable trades found (min EV: {min_ev})")

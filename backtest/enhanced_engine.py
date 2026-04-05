@@ -102,8 +102,8 @@ class EnhancedBacktestEngine:
     """
     
     ATR_PERIOD = 14
-    STOP_MULTIPLIER = 1.0  # Tighter stop for better risk/reward
-    TP_MULTIPLIER = 2.0    # Lower TP target
+    STOP_MULTIPLIER = 0.5  # Tighter stop for better risk/reward
+    TP_MULTIPLIER = 3.0    # Wider TP target
     MAX_BARS_HELD = 8
     
     # Fee structure (Binance Futures)
@@ -199,6 +199,7 @@ class EnhancedBacktestEngine:
                 trade_id=trade['trade_id'],
                 symbol=trade['symbol'],
                 signal_type=trade['signal_type'],
+                direction=trade.get('direction', ''),
                 entry_price=trade['entry_price'],
                 exit_price=trade['exit_price'],
                 size=trade['quantity'],
@@ -209,14 +210,108 @@ class EnhancedBacktestEngine:
                 exit_seq=trade['exit_seq'],
                 strategy=trade['strategy'],
                 regime=trade.get('regime', ''),
+                exit_reason=trade.get('exit_reason', ''),
             )
             analyzer.add_trade(record)
+            # Also set additional attributes for diagnostic analysis
+            record.entry_to_stop_pct = trade.get('entry_to_stop_dist_pct', 0)
+            record.realized_stop_pct = trade.get('realized_stop_pct', 0)
+            record.realized_tp_pct = trade.get('realized_tp_pct', 0)
+            record.bars_held = trade.get('bars_held', 0)
         
         for pnl in [t['pnl'] for t in self._trade_log]:
             analyzer.record_equity(self._equity + pnl)
         
         metrics = analyzer.compute()
-        run_time = time.time() - start_time
+        
+        # Debug: Print trade statistics
+        if metrics is None:
+            logger.error("Metrics is None! Trade log length: %d", len(self._trade_log))
+            # Return a minimal result
+            from backtest.engine import BacktestResult
+            return BacktestResult(
+                metrics=None,
+                settings=self._settings_dict(),
+                config=self._config_dict(),
+                trades=self._trade_log,
+                run_time_seconds=time.time() - start_time,
+                seed=self.bt_settings.rng_seed,
+                data_source=f"enhanced:{list(data.keys())[0] if data else 'unknown'}",
+                bars_analyzed=bars_count,
+                events_processed=bars_count,
+                events_rejected=0,
+                parameter_updates=self._parameter_updates,
+                kill_triggered=self._kill_triggered,
+                kill_reason=self._kill_reason,
+            )
+        
+        logger.info(
+            f"Enhanced Backtest complete: {bars_count} bars, {len(self._trade_log)} trades, "
+            f"return={metrics.total_return_pct:.2f}%, sharpe={metrics.sharpe_ratio:.3f}, "
+            f"max_dd={metrics.max_drawdown:.2%}"
+        )
+        
+        # Print diagnostic breakdown
+        if len(self._trade_log) > 0:
+            logger.info("=== DIAGNOSTIC BREAKDOWN ===")
+            
+            # By regime
+            regime_pnl = {}
+            regime_count = {}
+            for t in self._trade_log:
+                r = t.get('regime', 'UNKNOWN')
+                regime_pnl[r] = regime_pnl.get(r, 0) + t['pnl']
+                regime_count[r] = regime_count.get(r, 0) + 1
+            
+            logger.info("P&L by Regime:")
+            for r, pnl in sorted(regime_pnl.items(), key=lambda x: x[1], reverse=True):
+                logger.info(f"  {r}: ${pnl:.2f} ({regime_count[r]} trades)")
+            
+            # By strategy
+            strat_pnl = {}
+            strat_count = {}
+            for t in self._trade_log:
+                s = t.get('strategy', 'UNKNOWN')
+                strat_pnl[s] = strat_pnl.get(s, 0) + t['pnl']
+                strat_count[s] = strat_count.get(s, 0) + 1
+            
+            logger.info("P&L by Strategy:")
+            for s, pnl in sorted(strat_pnl.items(), key=lambda x: x[1], reverse=True):
+                logger.info(f"  {s}: ${pnl:.2f} ({strat_count[s]} trades)")
+            
+            # By direction
+            dir_pnl = {}
+            dir_count = {}
+            for t in self._trade_log:
+                d = t.get('direction', 'UNKNOWN')
+                dir_pnl[d] = dir_pnl.get(d, 0) + t['pnl']
+                dir_count[d] = dir_count.get(d, 0) + 1
+            
+            logger.info("P&L by Direction:")
+            for d, pnl in sorted(dir_pnl.items(), key=lambda x: x[1], reverse=True):
+                logger.info(f"  {d}: ${pnl:.2f} ({dir_count[d]} trades)")
+            
+            # By exit reason
+            exit_pnl = {}
+            exit_count = {}
+            for t in self._trade_log:
+                e = t.get('exit_reason', 'UNKNOWN')
+                exit_pnl[e] = exit_pnl.get(e, 0) + t['pnl']
+                exit_count[e] = exit_count.get(e, 0) + 1
+            
+            logger.info("P&L by Exit Reason:")
+            for e, pnl in sorted(exit_pnl.items(), key=lambda x: x[1], reverse=True):
+                logger.info(f"  {e}: ${pnl:.2f} ({exit_count[e]} trades)")
+            
+            # Average stop/TP distances
+            avg_stop = sum(t.get('entry_to_stop_dist_pct', 0) for t in self._trade_log) / len(self._trade_log)
+            avg_tp = sum(t.get('entry_to_tp_dist_pct', 0) for t in self._trade_log) / len(self._trade_log)
+            avg_bars = sum(t.get('bars_held', 0) for t in self._trade_log) / len(self._trade_log)
+            
+            logger.info(f"Average entry-to-stop distance: {avg_stop:.2f}%")
+            logger.info(f"Average entry-to-TP distance: {avg_tp:.2f}%")
+            logger.info(f"Average bars held: {avg_bars:.1f}")
+            logger.info("=== END DIAGNOSTIC ===")
         
         from backtest.engine import BacktestResult
         result = BacktestResult(
@@ -224,7 +319,7 @@ class EnhancedBacktestEngine:
             settings=self._settings_dict(),
             config=self._config_dict(),
             trades=self._trade_log,
-            run_time_seconds=run_time,
+            run_time_seconds=time.time() - start_time,
             seed=self.bt_settings.rng_seed,
             data_source=f"enhanced:{list(data.keys())[0] if data else 'unknown'}",
             bars_analyzed=bars_count,
@@ -233,12 +328,6 @@ class EnhancedBacktestEngine:
             parameter_updates=self._parameter_updates,
             kill_triggered=self._kill_triggered,
             kill_reason=self._kill_reason,
-        )
-        
-        logger.info(
-            f"Enhanced Backtest complete: {bars_count} bars, {len(self._trade_log)} trades, "
-            f"return={metrics.total_return_pct:.2f}%, sharpe={metrics.sharpe_ratio:.3f}, "
-            f"max_dd={metrics.max_drawdown:.2%}"
         )
         
         return result
@@ -382,11 +471,12 @@ class EnhancedBacktestEngine:
         leveraged_pnl = raw_pnl * self.leverage
         net_pnl = leveraged_pnl - fees
         
-        # Record trade
+        # Record trade with full diagnostic info
         trade_record = {
             "trade_id": position.position_id,
             "symbol": position.symbol,
             "signal_type": position.signal_type.value,
+            "direction": "LONG" if position.signal_type == SignalType.LONG else "SHORT",
             "entry_price": position.entry_price,
             "exit_price": exit_price,
             "quantity": position.quantity,
@@ -403,6 +493,11 @@ class EnhancedBacktestEngine:
             "stop_loss": position.stop_loss,
             "take_profit": position.take_profit,
             "equity_after": self._equity + net_pnl,
+            # Diagnostic fields
+            "entry_to_stop_dist_pct": abs(position.entry_price - position.stop_loss) / position.entry_price * 100 if position.entry_price > 0 else 0,
+            "entry_to_tp_dist_pct": abs(position.take_profit - position.entry_price) / position.entry_price * 100 if position.entry_price > 0 else 0,
+            "realized_stop_pct": abs(exit_price - position.entry_price) / position.entry_price * 100 if position.signal_type == SignalType.LONG and exit_price < position.entry_price or position.signal_type == SignalType.SHORT and exit_price > position.entry_price else 0,
+            "realized_tp_pct": abs(exit_price - position.entry_price) / position.entry_price * 100 if position.signal_type == SignalType.LONG and exit_price > position.entry_price or position.signal_type == SignalType.SHORT and exit_price < position.entry_price else 0,
         }
         
         self._trade_log.append(trade_record)
