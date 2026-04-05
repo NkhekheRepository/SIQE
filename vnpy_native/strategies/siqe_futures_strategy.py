@@ -43,10 +43,10 @@ class SiqeFuturesStrategy(CtaTemplate):
 
     # --- Mean Reversion parameters ---
     mr_boll_period: int = 20
-    mr_boll_dev: float = 2.0
+    mr_boll_dev: float = 1.8
     mr_rsi_period: int = 14
-    mr_rsi_lower: float = 30.0
-    mr_rsi_upper: float = 70.0
+    mr_rsi_lower: float = 25.0
+    mr_rsi_upper: float = 75.0
 
     # --- Momentum parameters ---
     mom_fast_period: int = 10
@@ -59,7 +59,7 @@ class SiqeFuturesStrategy(CtaTemplate):
     bo_donchian_period: int = 20
     bo_atr_period: int = 14
     bo_atr_multiplier: float = 2.0
-    bo_confirmation_bars: int = 2
+    bo_confirmation_bars: int = 1
 
     # --- Futures-specific ---
     leverage: int = 50
@@ -155,7 +155,7 @@ class SiqeFuturesStrategy(CtaTemplate):
         self._original_rsi_upper: int = 70
         self._original_boll_dev: float = 2.0
         self._relaxation_factor: float = 1.0
-        self._max_relaxation: float = 2.0
+        self._max_relaxation: float = 1.5
 
         # Alert manager for Telegram alerts
         self._alert_manager = None
@@ -280,11 +280,14 @@ class SiqeFuturesStrategy(CtaTemplate):
                 self.write_log(f"Signal detected - reset thresholds to original")
         
         # Adaptive sensitivity: relax thresholds if no signals for too long
-        if self._bars_without_signal > 120 and self._relaxation_factor < self._max_relaxation:
-            self._relaxation_factor = min(self._bars_without_signal / 60, self._max_relaxation)
-            self.mr_rsi_lower = int(self._original_rsi_lower * min(1.0, 35 / self._original_rsi_lower))
-            self.mr_rsi_upper = int(self._original_rsi_upper * max(1.0, 65 / self._original_rsi_upper))
-            self.mr_boll_dev = self._original_boll_dev / self._relaxation_factor
+        # Relaxation makes bands WIDER to generate more signals
+        if self._bars_without_signal > 60 and self._relaxation_factor < self._max_relaxation:
+            self._relaxation_factor = min(self._bars_without_signal / 40, self._max_relaxation)
+            # Widen RSI bands: lower goes down, upper goes up
+            self.mr_rsi_lower = max(15, int(self._original_rsi_lower - 5 * (self._relaxation_factor - 1)))
+            self.mr_rsi_upper = min(85, int(self._original_rsi_upper + 5 * (self._relaxation_factor - 1)))
+            # Widen Bollinger bands (smaller multiplier = wider)
+            self.mr_boll_dev = max(1.0, self._original_boll_dev / self._relaxation_factor)
             if self._bar_count % 30 == 0:
                 self.write_log(f"Adaptive: relaxed RSILower={self.mr_rsi_lower}, RSIUpper={self.mr_rsi_upper}, BollDev={self.mr_boll_dev:.2f} (factor={self._relaxation_factor:.2f})")
         

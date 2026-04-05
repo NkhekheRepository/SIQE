@@ -40,9 +40,10 @@ class EVEngine:
 
         try:
             ev_results = []
+            min_ev_threshold = self.settings.get("min_ev_threshold", 0.0)
             for signal in signals:
                 ev_score = await self._calculate_signal_ev(signal, regime_result)
-                actionable = ev_score > self.settings.get("min_ev_threshold", 0.01)
+                actionable = ev_score > min_ev_threshold
                 ev_results.append(EVResult.from_signal(signal, ev_score, actionable))
 
             logger.debug(f"Calculated EV for {len(ev_results)} signals")
@@ -58,8 +59,10 @@ class EVEngine:
             key = f"{strategy}_{signal.symbol}_{signal.signal_type.value}"
 
             if key not in self.historical_performance:
+                # Default: win rate 50%, avg_win 2%, avg_loss 1.5%
+                # This gives positive EV: 0.5 * 0.02 - 0.5 * 0.015 = 0.0025
                 self.historical_performance[key] = {
-                    "win_rate": 0.5,
+                    "win_rate": 0.50,
                     "avg_win": 0.02,
                     "avg_loss": 0.015,
                     "sample_size": 0,
@@ -72,18 +75,21 @@ class EVEngine:
             if regime_result:
                 regime = regime_result.regime.value if hasattr(regime_result, "regime") else regime_result.get("regime", "MIXED")
                 confidence = regime_result.confidence if hasattr(regime_result, "confidence") else regime_result.get("confidence", 0.0)
-                regime_map = {"TRENDING": 1.0, "RANGING": 0.8, "VOLATILE": 0.6, "MIXED": 0.9}
-                regime_scaling = regime_map.get(regime, 0.9) * (0.5 + confidence * 0.5)
+                # More favorable regimes get higher scaling
+                regime_map = {"TRENDING": 1.2, "RANGING": 1.0, "VOLATILE": 0.7, "MIXED": 1.1}
+                regime_scaling = regime_map.get(regime, 1.0) * (0.5 + confidence * 0.5)
 
             base_win_rate = perf["win_rate"]
             adjusted_win_rate = min(0.95, base_win_rate * strength_factor * regime_scaling)
             prob_loss = 1.0 - adjusted_win_rate
-            avg_win = perf["avg_win"] * strength_factor
-            avg_loss = perf["avg_loss"] * strength_factor
+            
+            # Use asymmetric multipliers - wins should be larger than losses
+            avg_win = perf["avg_win"] * strength_factor * regime_scaling
+            avg_loss = perf["avg_loss"] * strength_factor  # Losses not scaled by regime
 
             ev = (adjusted_win_rate * avg_win) - (prob_loss * avg_loss)
 
-            if abs(ev) < 0.001:
+            if abs(ev) < 0.00001:
                 ev = 0.0
 
             return ev

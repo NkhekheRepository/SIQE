@@ -24,7 +24,7 @@ class Settings:
         self.max_position_size = float(os.getenv("MAX_POSITION_SIZE", "0.1"))
         self.max_daily_loss = float(os.getenv("MAX_DAILY_LOSS", "0.05"))
         self.max_drawdown = float(os.getenv("MAX_DRAWDOWN", "0.20"))
-        self.min_ev_threshold = float(os.getenv("MIN_EV_THRESHOLD", "0.01"))
+        self.min_ev_threshold = float(os.getenv("MIN_EV_THRESHOLD", "0.0"))
         
         # Risk management settings
         self.max_consecutive_losses = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
@@ -79,6 +79,18 @@ class Settings:
         self.stage_timeout = float(os.getenv("STAGE_TIMEOUT", "5.0"))
         self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
         self.retry_base_delay = float(os.getenv("RETRY_BASE_DELAY", "0.1"))
+        
+        # Telegram Alert Settings
+        self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        self.alert_enabled = os.getenv("ALERT_ENABLED", "true").lower() == "true"
+        self.alert_rate_limit_seconds = int(os.getenv("ALERT_RATE_LIMIT_SECONDS", "60"))
+        
+        # Alert Thresholds
+        self.alert_position_size_warning = float(os.getenv("ALERT_POSITION_SIZE_WARNING", "0.05"))
+        self.alert_drawdown_warning = float(os.getenv("ALERT_DRAWDOWN_WARNING", "0.05"))
+        self.alert_drawdown_critical = float(os.getenv("ALERT_DRAWDOWN_CRITICAL", "0.10"))
+        self.alert_param_drift = float(os.getenv("ALERT_PARAM_DRIFT", "0.30"))
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get setting value by key."""

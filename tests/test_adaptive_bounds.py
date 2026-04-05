@@ -61,7 +61,7 @@ class TestRegimeDetector:
         lows = closes - 1.0
 
         result = RegimeDetector.detect(highs, lows, closes)
-        assert result.regime in (MarketRegime.TRENDING, MarketRegime.RANGING)
+        assert result.regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN, MarketRegime.RANGING)
 
     def test_detect_ranging_regime(self):
         rng = np.random.RandomState(42)
@@ -157,11 +157,11 @@ class TestAdaptiveIndicatorBounds:
 
     def test_get_optimal_config_returns_none_initially(self):
         bounds = AdaptiveIndicatorBounds()
-        assert bounds.get_optimal_config(MarketRegime.TRENDING) is None
+        assert bounds.get_optimal_config(MarketRegime.TRENDING_UP) is None
 
     def test_get_adaptive_config_returns_default_when_no_sweep(self):
         bounds = AdaptiveIndicatorBounds()
-        config = bounds.get_adaptive_config(MarketRegime.TRENDING)
+        config = bounds.get_adaptive_config(MarketRegime.TRENDING_UP)
         assert isinstance(config, IndicatorConfig)
         assert config == IndicatorConfig()
 
@@ -176,8 +176,8 @@ class TestAdaptiveIndicatorBounds:
     def test_sweep_stores_regime_config(self):
         data = generate_test_data()
         bounds = AdaptiveIndicatorBounds(n_cma_iterations=5, grid_resolution=3)
-        bounds.sweep_parameters(data, MarketRegime.TRENDING)
-        config = bounds.get_optimal_config(MarketRegime.TRENDING)
+        bounds.sweep_parameters(data, MarketRegime.TRENDING_UP)
+        config = bounds.get_optimal_config(MarketRegime.TRENDING_UP)
         assert config is not None
         assert isinstance(config, IndicatorConfig)
 
@@ -191,7 +191,7 @@ class TestAdaptiveIndicatorBounds:
         data = generate_test_data()
         bounds = AdaptiveIndicatorBounds(n_cma_iterations=5, grid_resolution=3)
         bounds.sweep_parameters(data, MarketRegime.RANGING)
-        bounds.sweep_parameters(data, MarketRegime.TRENDING)
+        bounds.sweep_parameters(data, MarketRegime.TRENDING_UP)
         assert len(bounds._sweep_history) == 2
 
     def test_sweep_validates_config(self):
@@ -214,20 +214,21 @@ class TestParameterSweepResult:
             max_drawdown=-0.05,
             total_trades=100,
             win_rate=0.55,
-            regime=MarketRegime.TRENDING,
+            regime=MarketRegime.TRENDING_UP,
         )
         assert result.sharpe_ratio == 1.5
         assert result.total_trades == 100
         assert result.win_rate == 0.55
-        assert result.regime == MarketRegime.TRENDING
+        assert result.regime == MarketRegime.TRENDING_UP
 
 
 class TestMarketRegime:
     def test_all_regimes_exist(self):
-        assert MarketRegime.TRENDING.value == "trending"
+        assert MarketRegime.TRENDING_UP.value == "trending_up"
+        assert MarketRegime.TRENDING_DOWN.value == "trending_down"
         assert MarketRegime.RANGING.value == "ranging"
         assert MarketRegime.VOLATILE.value == "volatile"
         assert MarketRegime.QUIET.value == "quiet"
 
     def test_regime_count(self):
-        assert len(MarketRegime) == 4
+        assert len(MarketRegime) == 5

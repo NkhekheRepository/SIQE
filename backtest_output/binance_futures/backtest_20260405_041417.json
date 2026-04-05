@@ -1,0 +1,72 @@
+{
+  "metadata": {
+    "generated_at": "2026-04-05T04:14:17.338645",
+    "seed": 42,
+    "data_source": "enhanced:BTCUSDT",
+    "run_time_seconds": 7.9831414222717285,
+    "bars_analyzed": 385
+  },
+  "settings": {
+    "data_provider": "parquet",
+    "symbols": [
+      "BTCUSDT"
+    ],
+    "timeframe": "15m",
+    "initial_equity": 10000,
+    "leverage": 35
+  },
+  "config": {
+    "stop_multiplier": 1.5,
+    "tp_multiplier": 2.5,
+    "max_bars_held": 8,
+    "atr_period": 14,
+    "taker_fee": 0.0004,
+    "maker_fee": 0.0002,
+    "risk_per_trade": 0.01,
+    "max_position_size": 0.05
+  },
+  "metrics": {
+    "avg_drawdown": 0.0,
+    "avg_loss": 0.0,
+    "avg_slippage_bps": 0.0,
+    "avg_trade_duration": 0.0,
+    "avg_win": 0.0,
+    "bars_analyzed": 0,
+    "calmar_ratio": 0.0,
+    "daily_returns": [
+      0.0
+    ],
+    "drawdown_curve": [
+      0.0
+    ],
+    "equity_curve": [
+      10000.0
+    ],
+    "events_processed": 0,
+    "events_rejected": 0,
+    "final_equity": 10000.0,
+    "initial_equity": 10000,
+    "losing_trades": 0,
+    "max_consecutive_losses": 0,
+    "max_consecutive_wins": 0,
+    "max_drawdown": 0.0,
+    "max_drawdown_duration": 0,
+    "monthly_returns": {},
+    "pnl_by_regime": {},
+    "pnl_by_strategy": {},
+    "pnl_by_symbol": {},
+    "profit_factor": 0.0,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": 0.0,
+    "total_pnl": 0.0,
+    "total_return_pct": 0.0,
+    "total_slippage": 0.0,
+    "total_trades": 0,
+    "win_rate": 0.0,
+    "winning_trades": 0
+  },
+  "trades": [],
+  "parameter_updates": 0,
+  "kill_triggered": false,
+  "kill_reason": ""
+}

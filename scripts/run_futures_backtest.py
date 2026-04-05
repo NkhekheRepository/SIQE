@@ -36,7 +36,7 @@ def run_futures_backtest(
     start_date: str = "2025-10-01",
     end_date: str = "2026-04-04",
     capital: float = 10000.0,
-    interval: Interval = Interval.HOUR,
+    interval: Interval = Interval.MINUTE15,
     rate: float = 0.0004,
     slippage: float = 2.0,
     size: int = 1,
@@ -69,13 +69,16 @@ def run_futures_backtest(
         "atr_stop_multiplier": 1.0,
         "atr_trailing_multiplier": 0.75,
         "mr_boll_period": 20,
-        "mr_boll_dev": 2.0,
+        "mr_boll_dev": 1.8,
         "mr_rsi_period": 14,
+        "mr_rsi_lower": 25.0,
+        "mr_rsi_upper": 75.0,
         "mom_fast_period": 10,
         "mom_slow_period": 30,
         "bo_donchian_period": 20,
         "bo_atr_period": 14,
         "bo_atr_multiplier": 2.0,
+        "bo_confirmation_bars": 1,
     })
 
     print("Loading futures market data from database...")

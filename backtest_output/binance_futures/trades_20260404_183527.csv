@@ -1,0 +1,2 @@
+trade_id,symbol,signal_type,entry_price,exit_price,quantity,pnl,pnl_pct,fees,exit_reason,entry_seq,exit_seq,strategy,regime,bars_held,atr_at_entry,stop_loss,take_profit,equity_after
+bt_pos_1,BTCUSDT,short,69880.9,70303.22,0.0071550309168885926,-106.16115167377814,-1.061622132959111,0.4012086850627282,stop_loss,3414,3418,momentum,TRENDING,4,281.54666666666645,70303.22,69177.03333333333,9893.738848326222

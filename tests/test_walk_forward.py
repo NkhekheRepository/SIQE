@@ -95,7 +95,7 @@ class TestSafetyLimits:
     def test_validate_small_change_passes(self):
         limits = SafetyLimits()
         baseline = IndicatorConfig()
-        proposed = IndicatorConfig(rsi_period=15)
+        proposed = IndicatorConfig(bollinger_std=2.1)
         
         safe, violations = limits.validate_param_change(baseline, proposed)
         assert safe is True
@@ -149,19 +149,19 @@ class TestSafetyLimits:
 
 class TestWalkForwardValidator:
     def test_validate_returns_result(self):
-        data = generate_test_data(n=200)
+        data = generate_test_data(n=300)
         validator = WalkForwardValidator(train_months=1, test_months=1, bars_per_month=60)
         result = validator.validate(data, regime=MarketRegime.RANGING)
         assert isinstance(result, WalkForwardResult)
     
     def test_validate_has_windows(self):
-        data = generate_test_data(n=200)
+        data = generate_test_data(n=300)
         validator = WalkForwardValidator(train_months=1, test_months=1, bars_per_month=60)
         result = validator.validate(data, regime=MarketRegime.RANGING)
         assert len(result.windows) > 0
     
     def test_window_has_required_fields(self):
-        data = generate_test_data(n=200)
+        data = generate_test_data(n=300)
         validator = WalkForwardValidator(train_months=1, test_months=1, bars_per_month=60)
         result = validator.validate(data, regime=MarketRegime.RANGING)
         
@@ -180,7 +180,7 @@ class TestWalkForwardValidator:
         assert len(result.windows) == 0
     
     def test_result_has_metadata(self):
-        data = generate_test_data(n=200)
+        data = generate_test_data(n=300)
         validator = WalkForwardValidator(train_months=1, test_months=1, bars_per_month=60)
         result = validator.validate(data, regime=MarketRegime.RANGING)
         assert 'n_windows' in result.metadata

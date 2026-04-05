@@ -415,6 +415,179 @@ class StateManager:
             logger.error(f"Error getting strategy performance: {e}")
             return []
     
+    async def calculate_performance_metrics(self) -> Dict[str, Any]:
+        """
+        Calculate comprehensive performance metrics.
+        
+        Returns:
+            Dictionary with Sharpe, Sortino, Calmar, MaxDD, Expectancy, etc.
+        """
+        if not self.is_initialized:
+            return {}
+        
+        try:
+            # Get all trades with PnL
+            result = self.connection.execute("""
+                SELECT pnl, timestamp FROM trades 
+                WHERE pnl IS NOT NULL 
+                ORDER BY timestamp ASC
+            """).fetchall()
+            
+            if not result or len(result) < 5:
+                return {"error": "Insufficient trade data"}
+            
+            pnls = [row[0] for row in result]
+            timestamps = [row[1] for row in result]
+            
+            metrics = {}
+            
+            # Basic stats
+            total_trades = len(pnls)
+            wins = [p for p in pnls if p > 0]
+            losses = [p for p in pnls if p <= 0]
+            
+            metrics["total_trades"] = total_trades
+            metrics["winning_trades"] = len(wins)
+            metrics["losing_trades"] = len(losses)
+            metrics["win_rate"] = len(wins) / total_trades if total_trades > 0 else 0
+            
+            # Average win/loss
+            metrics["avg_win"] = sum(wins) / len(wins) if wins else 0
+            metrics["avg_loss"] = abs(sum(losses) / len(losses)) if losses else 0
+            
+            # Profit Factor
+            if metrics["avg_loss"] > 0:
+                metrics["profit_factor"] = (metrics["avg_win"] * len(wins)) / (metrics["avg_loss"] * len(losses)) if losses else float('inf')
+            else:
+                metrics["profit_factor"] = float('inf') if wins else 0
+            
+            # Expectancy
+            win_rate = metrics["win_rate"]
+            loss_rate = 1 - win_rate
+            metrics["expectancy"] = (win_rate * metrics["avg_win"]) - (loss_rate * metrics["avg_loss"])
+            metrics["expectancy_per_trade"] = sum(pnls) / total_trades
+            
+            # Equity curve and drawdown
+            equity_curve = []
+            cumulative = 0
+            peak = 0
+            max_dd = 0
+            max_dd_duration = 0
+            
+            in_drawdown = False
+            drawdown_start = 0
+            
+            for i, pnl in enumerate(pnls):
+                cumulative += pnl
+                equity_curve.append(cumulative)
+                
+                if cumulative > peak:
+                    peak = cumulative
+                    if in_drawdown:
+                        in_drawdown = False
+                        dd_duration = i - drawdown_start
+                        max_dd_duration = max(max_dd_duration, dd_duration)
+                else:
+                    if not in_drawdown:
+                        in_drawdown = True
+                        drawdown_start = i
+                    
+                    dd = (peak - cumulative) / peak if peak > 0 else 0
+                    max_dd = max(max_dd, dd)
+            
+            metrics["max_drawdown"] = max_dd
+            metrics["max_drawdown_duration"] = max_dd_duration
+            metrics["final_equity"] = cumulative
+            metrics["equity_curve"] = equity_curve[-100:]  # Last 100 points
+            
+            # Calculate returns
+            returns = [p / 10000 for p in pnls]  # Assuming starting equity of 10k
+            
+            # Sharpe Ratio
+            if len(returns) > 1:
+                import numpy as np
+                mean_return = np.mean(returns)
+                std_return = np.std(returns)
+                if std_return > 0:
+                    metrics["sharpe_ratio"] = (mean_return / std_return) * np.sqrt(252)
+                else:
+                    metrics["sharpe_ratio"] = 0
+                
+                # Sortino Ratio (downside deviation)
+                downside_returns = [r for r in returns if r < 0]
+                if downside_returns:
+                    downside_std = np.std(downside_returns)
+                    if downside_std > 0:
+                        metrics["sortino_ratio"] = (mean_return / downside_std) * np.sqrt(252)
+                    else:
+                        metrics["sortino_ratio"] = 0
+                else:
+                    metrics["sortino_ratio"] = float('inf')
+            else:
+                metrics["sharpe_ratio"] = 0
+                metrics["sortino_ratio"] = 0
+            
+            # Calmar Ratio
+            if metrics["max_drawdown"] > 0:
+                annual_return = (cumulative / 10000) / (len(pnls) / 252) if len(pnls) > 0 else 0
+                metrics["calmar_ratio"] = annual_return / metrics["max_drawdown"]
+            else:
+                metrics["calmar_ratio"] = float('inf')
+            
+            # Recovery Factor
+            if metrics["max_drawdown"] > 0:
+                metrics["recovery_factor"] = cumulative / (metrics["max_drawdown"] * 10000)
+            else:
+                metrics["recovery_factor"] = float('inf')
+            
+            # Consecutive wins/losses
+            max_consecutive_wins = 0
+            max_consecutive_losses = 0
+            current_wins = 0
+            current_losses = 0
+            
+            for pnl in pnls:
+                if pnl > 0:
+                    current_wins += 1
+                    current_losses = 0
+                    max_consecutive_wins = max(max_consecutive_wins, current_wins)
+                else:
+                    current_losses += 1
+                    current_wins = 0
+                    max_consecutive_losses = max(max_consecutive_losses, current_losses)
+            
+            metrics["max_consecutive_wins"] = max_consecutive_wins
+            metrics["max_consecutive_losses"] = max_consecutive_losses
+            
+            # Risk-adjusted metrics
+            metrics["win_loss_ratio"] = metrics["avg_win"] / metrics["avg_loss"] if metrics["avg_loss"] > 0 else float('inf')
+            metrics["risk_per_trade"] = 0.02  # 2% assumed
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Error calculating performance metrics: {e}")
+            return {"error": str(e)}
+    
+    async def get_performance_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of performance metrics for quick dashboard display.
+        """
+        metrics = await self.calculate_performance_metrics()
+        
+        if "error" in metrics:
+            return metrics
+        
+        return {
+            "total_trades": metrics.get("total_trades", 0),
+            "win_rate": f"{metrics.get('win_rate', 0):.1%}",
+            "profit_factor": f"{metrics.get('profit_factor', 0):.2f}",
+            "sharpe_ratio": f"{metrics.get('sharpe_ratio', 0):.2f}",
+            "max_drawdown": f"{metrics.get('max_drawdown', 0):.2%}",
+            "expectancy": f"${metrics.get('expectancy', 0):.2f}",
+            "total_pnl": f"${metrics.get('final_equity', 0):.2f}",
+        }
+    
     async def initialize_state(self) -> bool:
         """Initialize or load system state."""
         try:

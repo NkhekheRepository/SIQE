@@ -26,6 +26,7 @@ from skopt.space import Real, Integer
 
 from strategy_engine.config import (
     IndicatorConfig, MarketRegime, RegimeDetector, IndicatorBounds,
+    DirectionalBias, DirectionalBiasDetector,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,7 @@ class FeatureEngineeringPipeline:
         
         # Regime encoding
         if regime is not None:
-            features["regime_trending"] = 1.0 if regime == MarketRegime.TRENDING else 0.0
+            features["regime_trending"] = 1.0 if regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN) else 0.0
             features["regime_ranging"] = 1.0 if regime == MarketRegime.RANGING else 0.0
             features["regime_volatile"] = 1.0 if regime == MarketRegime.VOLATILE else 0.0
             features["regime_quiet"] = 1.0 if regime == MarketRegime.QUIET else 0.0
@@ -185,6 +186,7 @@ class IndicatorOptimizer(ABC):
         self,
         config: IndicatorConfig,
         data: pd.DataFrame,
+        bias: Optional[DirectionalBias] = None,
     ) -> Dict[str, float]:
         """
         Evaluate a configuration's performance.
@@ -194,6 +196,7 @@ class IndicatorOptimizer(ABC):
         Args:
             config: Indicator configuration to evaluate
             data: Price data with close column
+            bias: Optional directional bias for asymmetric evaluation
             
         Returns:
             Dict with sharpe, total_return, max_drawdown, win_rate, total_trades
@@ -215,6 +218,8 @@ class IndicatorOptimizer(ABC):
         signals = pd.Series(0, index=closes.index)
         signals[fast_ema > slow_ema] = 1
         signals[fast_ema < slow_ema] = -1
+        
+        returns = signals.shift(1) * closes.pct_change()
         
         returns = signals.shift(1) * closes.pct_change()
         returns = returns.dropna()
@@ -269,9 +274,10 @@ class BayesianOptOptimizer(IndicatorOptimizer):
         config: IndicatorConfig,
         market_data: pd.DataFrame,
         regime: MarketRegime,
+        bias: Optional[DirectionalBias] = None,
     ) -> Tuple[IndicatorConfig, Dict[str, float]]:
         """Optimize using Bayesian optimization."""
-        param_ranges = self._get_param_ranges(regime)
+        param_ranges = self._get_param_ranges(regime, bias)
         
         space = [
             Integer(param_ranges["bollinger_period"][0], param_ranges["bollinger_period"][1], name="bollinger_period"),
@@ -299,7 +305,7 @@ class BayesianOptOptimizer(IndicatorOptimizer):
             }
             try:
                 cfg = IndicatorConfig(**candidate)
-                metrics = self.evaluate(cfg, market_data)
+                metrics = self.evaluate(cfg, market_data, bias=bias)
                 return -metrics["sharpe"]
             except Exception:
                 return 10.0
@@ -346,10 +352,21 @@ class BayesianOptOptimizer(IndicatorOptimizer):
             return self._best_params[regime]
         return IndicatorConfig().to_dict()
     
-    def _get_param_ranges(self, regime: MarketRegime) -> Dict[str, Tuple]:
-        """Get parameter ranges for a regime."""
+    def _get_param_ranges(self, regime: MarketRegime, bias: Optional[DirectionalBias] = None) -> Dict[str, Tuple]:
+        """Get parameter ranges for a regime with optional bias adjustment."""
         ranges = {
-            MarketRegime.TRENDING: {
+            MarketRegime.TRENDING_UP: {
+                "bollinger_period": (10, 50),
+                "bollinger_std": (1.5, 3.0),
+                "rsi_period": (10, 30),
+                "macd_fast": (8, 20),
+                "macd_slow": (20, 60),
+                "macd_signal": (5, 15),
+                "atr_period": (10, 30),
+                "donchian_period": (15, 60),
+                "adx_period": (10, 20),
+            },
+            MarketRegime.TRENDING_DOWN: {
                 "bollinger_period": (10, 50),
                 "bollinger_std": (1.5, 3.0),
                 "rsi_period": (10, 30),
@@ -394,7 +411,17 @@ class BayesianOptOptimizer(IndicatorOptimizer):
                 "adx_period": (7, 14),
             },
         }
-        return ranges.get(regime, ranges[MarketRegime.RANGING])
+        
+        base_ranges = ranges.get(regime, ranges[MarketRegime.RANGING])
+        
+        if bias == DirectionalBias.BEAR:
+            bear_ranges = base_ranges.copy()
+            bear_ranges["bollinger_std"] = (1.5, 4.0)
+            bear_ranges["atr_period"] = (5, 25)
+            bear_ranges["donchian_period"] = (10, 50)
+            return bear_ranges
+        
+        return base_ranges
 
 
 class RandomForestTuner(IndicatorOptimizer):
@@ -419,14 +446,15 @@ class RandomForestTuner(IndicatorOptimizer):
         config: IndicatorConfig,
         market_data: pd.DataFrame,
         regime: MarketRegime,
+        bias: Optional[DirectionalBias] = None,
     ) -> Tuple[IndicatorConfig, Dict[str, float]]:
         """Optimize using Random Forest regression."""
-        param_ranges = self._get_param_ranges(regime)
+        param_ranges = self._get_param_ranges(regime, bias)
         
-        X, y = self._generate_training_data(param_ranges, market_data)
+        X, y = self._generate_training_data(param_ranges, market_data, bias)
         
         if len(X) < 10:
-            return config, self.evaluate(config, market_data)
+            return config, self.evaluate(config, market_data, bias=bias)
         
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
@@ -464,7 +492,7 @@ class RandomForestTuner(IndicatorOptimizer):
         except Exception:
             optimized_config = config
         
-        metrics = self.evaluate(optimized_config, market_data)
+        metrics = self.evaluate(optimized_config, market_data, bias=bias)
         self._best_params[regime] = best_params
         
         logger.info(
@@ -488,6 +516,7 @@ class RandomForestTuner(IndicatorOptimizer):
         self,
         param_ranges: Dict[str, Tuple],
         market_data: pd.DataFrame,
+        bias: Optional[DirectionalBias] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Generate random parameter combinations and evaluate them."""
         X = []
@@ -508,7 +537,7 @@ class RandomForestTuner(IndicatorOptimizer):
             
             try:
                 cfg = IndicatorConfig(**candidate)
-                metrics = self.evaluate(cfg, market_data)
+                metrics = self.evaluate(cfg, market_data, bias=bias)
                 X.append(list(candidate.values()))
                 y.append(metrics["sharpe"])
             except Exception:
@@ -516,10 +545,21 @@ class RandomForestTuner(IndicatorOptimizer):
         
         return np.array(X), np.array(y)
     
-    def _get_param_ranges(self, regime: MarketRegime) -> Dict[str, Tuple]:
-        """Get parameter ranges for a regime."""
+    def _get_param_ranges(self, regime: MarketRegime, bias: Optional[DirectionalBias] = None) -> Dict[str, Tuple]:
+        """Get parameter ranges for a regime with optional bias adjustment."""
         ranges = {
-            MarketRegime.TRENDING: {
+            MarketRegime.TRENDING_UP: {
+                "bollinger_period": (10, 50),
+                "bollinger_std": (1.5, 3.0),
+                "rsi_period": (10, 30),
+                "macd_fast": (8, 20),
+                "macd_slow": (20, 60),
+                "macd_signal": (5, 15),
+                "atr_period": (10, 30),
+                "donchian_period": (15, 60),
+                "adx_period": (10, 20),
+            },
+            MarketRegime.TRENDING_DOWN: {
                 "bollinger_period": (10, 50),
                 "bollinger_std": (1.5, 3.0),
                 "rsi_period": (10, 30),
@@ -564,7 +604,17 @@ class RandomForestTuner(IndicatorOptimizer):
                 "adx_period": (7, 14),
             },
         }
-        return ranges.get(regime, ranges[MarketRegime.RANGING])
+        
+        base_ranges = ranges.get(regime, ranges[MarketRegime.RANGING])
+        
+        if bias == DirectionalBias.BEAR:
+            bear_ranges = base_ranges.copy()
+            bear_ranges["bollinger_std"] = (1.5, 4.0)
+            bear_ranges["atr_period"] = (5, 25)
+            bear_ranges["donchian_period"] = (10, 50)
+            return bear_ranges
+        
+        return base_ranges
 
 
 class GPROptimizer(IndicatorOptimizer):
@@ -589,14 +639,15 @@ class GPROptimizer(IndicatorOptimizer):
         config: IndicatorConfig,
         market_data: pd.DataFrame,
         regime: MarketRegime,
+        bias: Optional[DirectionalBias] = None,
     ) -> Tuple[IndicatorConfig, Dict[str, float]]:
         """Optimize using Gaussian Process Regression."""
-        param_ranges = self._get_param_ranges(regime)
+        param_ranges = self._get_param_ranges(regime, bias)
         
-        X, y = self._generate_training_data(param_ranges, market_data)
+        X, y = self._generate_training_data(param_ranges, market_data, bias)
         
         if len(X) < 10:
-            return config, self.evaluate(config, market_data)
+            return config, self.evaluate(config, market_data, bias=bias)
         
         self._scaler = StandardScaler()
         X_scaled = self._scaler.fit_transform(X)
@@ -674,6 +725,7 @@ class GPROptimizer(IndicatorOptimizer):
         self,
         param_ranges: Dict[str, Tuple],
         market_data: pd.DataFrame,
+        bias: Optional[DirectionalBias] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Generate random parameter combinations and evaluate them."""
         X = []
@@ -694,7 +746,7 @@ class GPROptimizer(IndicatorOptimizer):
             
             try:
                 cfg = IndicatorConfig(**candidate)
-                metrics = self.evaluate(cfg, market_data)
+                metrics = self.evaluate(cfg, market_data, bias=bias)
                 X.append(list(candidate.values()))
                 y.append(metrics["sharpe"])
             except Exception:
@@ -728,10 +780,21 @@ class GPROptimizer(IndicatorOptimizer):
         
         return np.array(grid)
     
-    def _get_param_ranges(self, regime: MarketRegime) -> Dict[str, Tuple]:
-        """Get parameter ranges for a regime."""
+    def _get_param_ranges(self, regime: MarketRegime, bias: Optional[DirectionalBias] = None) -> Dict[str, Tuple]:
+        """Get parameter ranges for a regime with optional bias adjustment."""
         ranges = {
-            MarketRegime.TRENDING: {
+            MarketRegime.TRENDING_UP: {
+                "bollinger_period": (10, 50),
+                "bollinger_std": (1.5, 3.0),
+                "rsi_period": (10, 30),
+                "macd_fast": (8, 20),
+                "macd_slow": (20, 60),
+                "macd_signal": (5, 15),
+                "atr_period": (10, 30),
+                "donchian_period": (15, 60),
+                "adx_period": (10, 20),
+            },
+            MarketRegime.TRENDING_DOWN: {
                 "bollinger_period": (10, 50),
                 "bollinger_std": (1.5, 3.0),
                 "rsi_period": (10, 30),
@@ -776,4 +839,14 @@ class GPROptimizer(IndicatorOptimizer):
                 "adx_period": (7, 14),
             },
         }
-        return ranges.get(regime, ranges[MarketRegime.RANGING])
+        
+        base_ranges = ranges.get(regime, ranges[MarketRegime.RANGING])
+        
+        if bias == DirectionalBias.BEAR:
+            bear_ranges = base_ranges.copy()
+            bear_ranges["bollinger_std"] = (1.5, 4.0)
+            bear_ranges["atr_period"] = (5, 25)
+            bear_ranges["donchian_period"] = (10, 50)
+            return bear_ranges
+        
+        return base_ranges

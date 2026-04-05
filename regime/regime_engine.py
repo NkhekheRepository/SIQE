@@ -11,6 +11,7 @@ import numpy as np
 
 from core.clock import EventClock
 from models.trade import MarketEvent, RegimeResult, RegimeType
+from alerts.alert_manager import AlertManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +24,16 @@ class RegimeEngine:
         self.regime_history: List[Dict[str, Any]] = []
         self.lookback_period = settings.get("regime_lookback_period", 100)
         self.current_regime = "UNKNOWN"
+        self.previous_regime = "UNKNOWN"
         self.regime_confidence = 0.0
         self._last_trend_strength = None
         self._last_range_strength = None
+        self.alert_manager: Optional[AlertManager] = None
+
+    def set_alert_manager(self, alert_manager: AlertManager) -> None:
+        """Connect alert manager for notifications."""
+        self.alert_manager = alert_manager
+        logger.info("Alert manager connected to Regime Engine")
 
     async def initialize(self) -> bool:
         try:
@@ -73,9 +81,12 @@ class RegimeEngine:
 
             avg_volatility = float(np.mean(volatilities))
 
-            if avg_volatility < 0.015:
+            # Adjusted thresholds for typical BTC 15m data (~0.3% median vol)
+            # LOW: < 0.2% (quiet market)
+            # HIGH: > 0.6% (volatile)
+            if avg_volatility < 0.002:
                 return {"regime": "LOW_VOL", "confidence": 0.8, "value": avg_volatility}
-            elif avg_volatility > 0.04:
+            elif avg_volatility > 0.006:
                 return {"regime": "HIGH_VOL", "confidence": 0.8, "value": avg_volatility}
             else:
                 return {"regime": "MEDIUM_VOL", "confidence": 0.7, "value": avg_volatility}
@@ -85,39 +96,71 @@ class RegimeEngine:
 
     async def _detect_trend_regime(self, market_data: Dict[str, MarketEvent]) -> Dict[str, Any]:
         try:
-            if self._last_trend_strength is None:
-                self._last_trend_strength = float(np.random.uniform(0, 1))
+            volatilities = [e.volatility for e in market_data.values() if e.volatility > 0]
+            if not volatilities:
+                return {"regime": "NO_TREND", "confidence": 0.5, "value": 0.0}
 
-            trend_change = float(np.random.normal(0, 0.1))
-            self._last_trend_strength += trend_change
-            self._last_trend_strength = float(np.clip(self._last_trend_strength, 0, 1))
-
-            if self._last_trend_strength > 0.7:
-                return {"regime": "STRONG_TREND", "confidence": 0.75, "value": self._last_trend_strength}
-            elif self._last_trend_strength > 0.3:
-                return {"regime": "WEAK_TREND", "confidence": 0.6, "value": self._last_trend_strength}
+            avg_vol = float(np.mean(volatilities))
+            price_events = [e for e in market_data.values() if e.mid_price > 0]
+            
+            if len(price_events) < 2:
+                return {"regime": "NO_TREND", "confidence": 0.5, "value": 0.0}
+            
+            prices = [e.mid_price for e in price_events[-20:]] if len(price_events) >= 20 else [e.mid_price for e in price_events]
+            if len(prices) < 10:
+                return {"regime": "NO_TREND", "confidence": 0.5, "value": 0.0}
+            
+            returns = np.diff(prices) / prices[:-1]
+            positive_returns = np.sum(returns > 0)
+            trend_strength = abs(positive_returns / len(returns) - 0.5) * 2
+            
+            adx_proxy = float(np.mean(np.abs(returns))) * 100
+            # Increase weight of ADX proxy significantly to make trend detection more sensitive
+            trend_strength = min(trend_strength + (adx_proxy / 20), 1.0)
+            
+            # Further lower thresholds for trend detection
+            if trend_strength > 0.25:
+                return {"regime": "STRONG_TREND", "confidence": 0.75, "value": trend_strength}
+            elif trend_strength > 0.15:
+                return {"regime": "WEAK_TREND", "confidence": 0.65, "value": trend_strength}
             else:
-                return {"regime": "NO_TREND", "confidence": 0.7, "value": self._last_trend_strength}
+                return {"regime": "NO_TREND", "confidence": 0.6, "value": trend_strength}
         except Exception as e:
             logger.error(f"Error detecting trend regime: {e}")
             return {"regime": "ERROR", "confidence": 0.0}
 
     async def _detect_range_regime(self, market_data: Dict[str, MarketEvent]) -> Dict[str, Any]:
         try:
-            if self._last_range_strength is None:
-                self._last_range_strength = 1.0 - getattr(self, '_last_trend_strength', 0.5)
+            volatilities = [e.volatility for e in market_data.values() if e.volatility > 0]
+            if not volatilities:
+                return {"regime": "STRONG_RANGE", "confidence": 0.6, "value": 0.7}
 
-            range_strength = 1.0 - getattr(self, '_last_trend_strength', 0.5)
-            range_strength += float(np.random.normal(0, 0.1))
-            range_strength = float(np.clip(range_strength, 0, 1))
-            self._last_range_strength = range_strength
-
-            if range_strength > 0.7:
-                return {"regime": "STRONG_RANGE", "confidence": 0.75, "value": range_strength}
+            avg_vol = float(np.mean(volatilities))
+            price_events = [e for e in market_data.values() if e.mid_price > 0]
+            
+            if len(price_events) < 10:
+                return {"regime": "STRONG_RANGE", "confidence": 0.5, "value": 0.7}
+            
+            prices = [e.mid_price for e in price_events[-20:]] if len(price_events) >= 20 else [e.mid_price for e in price_events]
+            if len(prices) < 10:
+                return {"regime": "STRONG_RANGE", "confidence": 0.5, "value": 0.7}
+            
+            price_range = (max(prices) - min(prices)) / min(prices) if min(prices) > 0 else 0
+            avg_vol_in_range = avg_vol * len(prices)
+            
+            if avg_vol_in_range > 0 and price_range < avg_vol_in_range * 2:
+                range_strength = min(0.8, price_range / (avg_vol_in_range + 0.001))
+            else:
+                returns = np.diff(prices) / prices[:-1]
+                sign_changes = np.sum(np.diff(np.sign(returns)) != 0)
+                range_strength = min(1.0, sign_changes / len(returns))
+            
+            if range_strength > 0.6:
+                return {"regime": "STRONG_RANGE", "confidence": 0.7, "value": range_strength}
             elif range_strength > 0.3:
                 return {"regime": "WEAK_RANGE", "confidence": 0.6, "value": range_strength}
             else:
-                return {"regime": "NO_RANGE", "confidence": 0.7, "value": range_strength}
+                return {"regime": "NO_RANGE", "confidence": 0.55, "value": range_strength}
         except Exception as e:
             logger.error(f"Error detecting range regime: {e}")
             return {"regime": "ERROR", "confidence": 0.0}
@@ -135,9 +178,9 @@ class RegimeEngine:
             best_signal = max(valid_signals, key=lambda x: x[1].get("confidence", 0))
 
             regime_mapping = {
-                "LOW_VOL": "RANGING", "MEDIUM_VOL": "MIXED", "HIGH_VOL": "VOLATILE",
-                "STRONG_TREND": "TRENDING", "WEAK_TREND": "TRENDING", "NO_TREND": "RANGING",
-                "STRONG_RANGE": "RANGING", "WEAK_RANGE": "RANGING", "NO_RANGE": "TRENDING",
+                "LOW_VOL": "MIXED", "MEDIUM_VOL": "MIXED", "HIGH_VOL": "VOLATILE",
+                "STRONG_TREND": "TRENDING", "WEAK_TREND": "TRENDING", "NO_TREND": "MIXED",
+                "STRONG_RANGE": "RANGING", "WEAK_RANGE": "RANGING", "NO_RANGE": "MIXED",
             }
 
             raw_regime = best_signal[1].get("regime", "UNKNOWN")
@@ -148,6 +191,16 @@ class RegimeEngine:
 
             self.current_regime = mapped_regime
             self.regime_confidence = final_confidence
+            
+            # Send regime change alert if regime changed
+            if self.previous_regime != "UNKNOWN" and self.previous_regime != mapped_regime:
+                if self.alert_manager:
+                    self.alert_manager.regime_change(
+                        old_regime=self.previous_regime,
+                        new_regime=mapped_regime
+                    )
+            
+            self.previous_regime = mapped_regime
 
             risk_scaling_map = {"TRENDING": 1.0, "RANGING": 0.8, "VOLATILE": 0.6, "MIXED": 0.9}
             risk_scaling = risk_scaling_map.get(mapped_regime, 1.0) * (0.5 + final_confidence * 0.5)

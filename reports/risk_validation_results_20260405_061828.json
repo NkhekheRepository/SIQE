@@ -1,0 +1,112 @@
+{
+  "walk_forward_15m": {
+    "passed": "False",
+    "n_windows": 21,
+    "avg_test_sharpe": 0.10341879988570064,
+    "pass_rate": 0.9523809523809523
+  },
+  "safety_limits": {
+    "total_windows": 21,
+    "windows_with_violations": 7,
+    "violation_rate": 0.3333333333333333
+  },
+  "risk_backtest_15m": {
+    "total_return": -0.5519944053608894,
+    "sharpe_ratio": -0.4983624557874148,
+    "max_drawdown": -0.010974665757371938,
+    "n_positions": 710,
+    "avg_position_size": 0.09201730328132818,
+    "risk_level": "green",
+    "var_95": 37.84220302587811,
+    "var_99": 72.26696189601252,
+    "win_rate": 0.47746478873239434,
+    "sample_positions": [
+      {
+        "idx": 720,
+        "fraction": 0.08513422200381013,
+        "dollar_amount": 8513.422200381014,
+        "method": "kelly_risk_parity_avg",
+        "warnings": 0
+      },
+      {
+        "idx": 744,
+        "fraction": 0.0853550507145438,
+        "dollar_amount": 8535.50507145438,
+        "method": "kelly_risk_parity_avg",
+        "warnings": 0
+      },
+      {
+        "idx": 768,
+        "fraction": 0.08227176961447172,
+        "dollar_amount": 8227.176961447172,
+        "method": "kelly_risk_parity_avg",
+        "warnings": 0
+      },
+      {
+        "idx": 792,
+        "fraction": 0.08060385881197461,
+        "dollar_amount": 8060.3858811974615,
+        "method": "kelly_risk_parity_avg",
+        "warnings": 0
+      },
+      {
+        "idx": 816,
+        "fraction": 0.07941430735098233,
+        "dollar_amount": 7941.430735098233,
+        "method": "kelly_risk_parity_avg",
+        "warnings": 0
+      }
+    ]
+  },
+  "stress_tests_15m": {
+    "all_survived": false,
+    "scenarios_tested": 3,
+    "scenarios_passed": 0,
+    "results": [
+      {
+        "scenario": "crypto_crash_2022",
+        "survived": false,
+        "max_drawdown": -0.9029075603192442,
+        "final_return": -88.82536718086187,
+        "dd_gate_triggered": true,
+        "warnings": [
+          "Max drawdown -90.3% exceeds limit 20%"
+        ]
+      },
+      {
+        "scenario": "flash_crash",
+        "survived": false,
+        "max_drawdown": -0.5612091606786552,
+        "final_return": -46.17762165307339,
+        "dd_gate_triggered": true,
+        "warnings": [
+          "Max drawdown -56.1% exceeds limit 20%"
+        ]
+      },
+      {
+        "scenario": "high_vol_regime",
+        "survived": false,
+        "max_drawdown": -0.9149303594295346,
+        "final_return": -86.44080253157951,
+        "dd_gate_triggered": true,
+        "warnings": [
+          "Max drawdown -91.5% exceeds limit 20%"
+        ]
+      }
+    ]
+  },
+  "monte_carlo_15m": {
+    "n_simulations": 5000,
+    "mean_return": -0.007447478644884037,
+    "median_return": -0.008226927845630061,
+    "p5_return": -0.07626884006580499,
+    "p95_return": 0.06517911948398743,
+    "worst_return": -0.1701864987933014,
+    "best_return": 0.16938090264324446,
+    "prob_loss": 0.581,
+    "prob_ruin": 0.0,
+    "var_95": 0.07626884006580499,
+    "var_99": 0.10282674904423483,
+    "confidence": 1.0
+  }
+}

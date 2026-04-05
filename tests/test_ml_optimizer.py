@@ -55,7 +55,7 @@ class TestFeatureEngineeringPipeline:
     def test_extract_features_with_regime(self):
         data = generate_test_data()
         pipeline = FeatureEngineeringPipeline()
-        features = pipeline.extract_features(data, regime=MarketRegime.TRENDING)
+        features = pipeline.extract_features(data, regime=MarketRegime.TRENDING_UP)
         assert 'regime_trending' in features.columns
         assert 'regime_ranging' in features.columns
 

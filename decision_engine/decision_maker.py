@@ -38,7 +38,7 @@ class DecisionEngine:
             if not ev_results:
                 return None
 
-            min_ev = self.settings.get("min_ev_threshold", 0.01)
+            min_ev = self.settings.get("min_ev_threshold", 0.0)
             actionable_trades = [ev for ev in ev_results if ev.ev_score >= min_ev]
 
             if not actionable_trades:

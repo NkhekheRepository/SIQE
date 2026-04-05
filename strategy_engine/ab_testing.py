@@ -116,7 +116,7 @@ class ABTestRunner:
         
         for i in range(n_simulations):
             indices = self.rng.choice(n, size=sample_size, replace=True)
-            sample_data = data.iloc[sorted(indices)]
+            sample_data = data.iloc[sorted(indices)].reset_index(drop=True)
             
             if len(sample_data) < 50:
                 continue

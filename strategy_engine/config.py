@@ -23,10 +23,18 @@ logger = logging.getLogger(__name__)
 
 class MarketRegime(Enum):
     """Market regime classification based on ADX and volatility."""
-    TRENDING = "trending"
+    TRENDING_UP = "trending_up"
+    TRENDING_DOWN = "trending_down"
     RANGING = "ranging"
     VOLATILE = "volatile"
     QUIET = "quiet"
+
+
+class DirectionalBias(Enum):
+    """Market directional bias based on EMA crossovers."""
+    BULL = "bull"
+    BEAR = "bear"
+    NEUTRAL = "neutral"
 
 
 class IndicatorValidationError(Exception):
@@ -52,9 +60,83 @@ class IndicatorBounds:
 class RegimeResult:
     """Result from regime detection."""
     regime: MarketRegime
-    adx: float
-    volatility: float
-    trend_strength: float
+    directional_bias: Optional[DirectionalBias] = None
+    adx: float = 0.0
+    volatility: float = 0.0
+    trend_strength: float = 0.0
+
+
+class DirectionalBiasDetector:
+    """
+    Detects market directional bias using EMA crossovers.
+    
+    Used to filter signals based on market direction:
+    - BULL: EMA50 > EMA200 (favor longs)
+    - BEAR: EMA50 < EMA200 (favor shorts)
+    - NEUTRAL: Within threshold (no preference)
+    """
+    
+    EMA50_PERIOD = 50
+    EMA200_PERIOD = 200
+    THRESHOLD_PCT = 0.01
+    
+    @classmethod
+    def detect(
+        cls,
+        closes: pd.Series,
+        ema50_period: int = EMA50_PERIOD,
+        ema200_period: int = EMA200_PERIOD,
+        threshold_pct: float = THRESHOLD_PCT,
+    ) -> DirectionalBias:
+        """
+        Detect directional bias from price data.
+        
+        Args:
+            closes: Price series
+            ema50_period: Fast EMA period
+            ema200_period: Slow EMA period
+            threshold_pct: Minimum % difference to classify as BULL/BEAR
+            
+        Returns:
+            DirectionalBias enum value
+        """
+        if len(closes) < ema200_period:
+            return DirectionalBias.NEUTRAL
+        
+        ema50 = closes.ewm(span=ema50_period, adjust=False).mean()
+        ema200 = closes.ewm(span=ema200_period, adjust=False).mean()
+        
+        diff_pct = (ema50.iloc[-1] - ema200.iloc[-1]) / ema200.iloc[-1]
+        
+        if diff_pct > threshold_pct:
+            return DirectionalBias.BULL
+        elif diff_pct < -threshold_pct:
+            return DirectionalBias.BEAR
+        return DirectionalBias.NEUTRAL
+    
+    @classmethod
+    def detect_series(
+        cls,
+        closes: pd.Series,
+        ema50_period: int = EMA50_PERIOD,
+        ema200_period: int = EMA200_PERIOD,
+        threshold_pct: float = THRESHOLD_PCT,
+    ) -> pd.Series:
+        """
+        Detect per-bar directional bias as a series.
+        
+        Returns a Series of DirectionalBias values, one per bar.
+        """
+        ema50 = closes.ewm(span=ema50_period, adjust=False).mean()
+        ema200 = closes.ewm(span=ema200_period, adjust=False).mean()
+        
+        diff_pct = (ema50 - ema200) / ema200
+        
+        bias_series = pd.Series(DirectionalBias.NEUTRAL, index=closes.index)
+        bias_series[diff_pct > threshold_pct] = DirectionalBias.BULL
+        bias_series[diff_pct < -threshold_pct] = DirectionalBias.BEAR
+        
+        return bias_series
 
 
 class RegimeDetector:
@@ -109,10 +191,15 @@ class RegimeDetector:
         
         trend_strength = abs(float(plus_di.iloc[-1]) - float(minus_di.iloc[-1])) if len(plus_di) > 0 else 0.0
         
-        regime = cls._classify_regime(adx, volatility)
+        trend_direction = float(plus_di.iloc[-1]) - float(minus_di.iloc[-1]) if len(plus_di) > 0 else 0.0
+        
+        regime = cls._classify_regime(adx, volatility, trend_direction)
+        
+        directional_bias = DirectionalBiasDetector.detect(closes)
         
         return RegimeResult(
             regime=regime,
+            directional_bias=directional_bias,
             adx=adx,
             volatility=volatility,
             trend_strength=trend_strength,
@@ -151,10 +238,13 @@ class RegimeDetector:
         return atr
     
     @classmethod
-    def _classify_regime(cls, adx: float, volatility: float) -> MarketRegime:
-        """Classify regime based on ADX and volatility."""
+    def _classify_regime(cls, adx: float, volatility: float, trend_direction: float = 0.0) -> MarketRegime:
+        """Classify regime based on ADX, volatility, and trend direction."""
         if adx > cls.ADX_TRENDING_THRESHOLD:
-            return MarketRegime.TRENDING
+            if trend_direction > 0:
+                return MarketRegime.TRENDING_UP
+            else:
+                return MarketRegime.TRENDING_DOWN
         elif adx < cls.ADX_RANGING_THRESHOLD:
             if volatility > cls.VOLATILITY_HIGH_THRESHOLD:
                 return MarketRegime.VOLATILE
@@ -473,7 +563,18 @@ class AdaptiveIndicatorBounds:
     """
     
     REGIME_PARAM_RANGES = {
-        MarketRegime.TRENDING: {
+        MarketRegime.TRENDING_UP: {
+            "bollinger_period": (10, 50),
+            "bollinger_std": (1.5, 3.0),
+            "rsi_period": (10, 30),
+            "macd_fast": (8, 20),
+            "macd_slow": (20, 60),
+            "macd_signal": (5, 15),
+            "atr_period": (10, 30),
+            "donchian_period": (15, 60),
+            "adx_period": (10, 20),
+        },
+        MarketRegime.TRENDING_DOWN: {
             "bollinger_period": (10, 50),
             "bollinger_std": (1.5, 3.0),
             "rsi_period": (10, 30),
@@ -809,15 +910,89 @@ class SafetyLimits:
     """
     Guardrails for ML-driven parameter deployment.
     
+    Uses tiered limits based on parameter stability analysis:
+    - Frozen params (period-based): 5% max change
+    - Continuous params (bollinger_std): 15% max change
+    - Semi-stable params (macd_slow, macd_signal, adx_period): 10% max change
+    
     Prevents catastrophic changes from being applied to live trading.
     All limits are configurable but have conservative defaults.
     """
-    max_param_change_pct: float = 0.20  # 20% max change from baseline
-    min_confidence: float = 0.70  # 70% minimum confidence for ML suggestions
-    circuit_breaker_losses: int = 5  # Disable after 5 consecutive losses
-    circuit_breaker_drawdown: float = 0.10  # Disable at 10% drawdown
-    require_human_review: bool = True  # Flag changes requiring manual approval
-    max_daily_param_changes: int = 3  # Limit parameter changes per day
+    max_frozen_param_change_pct: float = 0.05
+    max_continuous_param_change_pct: float = 0.15
+    max_semi_stable_param_change_pct: float = 0.10
+    min_confidence: float = 0.70
+    circuit_breaker_losses: int = 5
+    circuit_breaker_drawdown: float = 0.10
+    require_human_review: bool = True
+    max_daily_param_changes: int = 3
+    
+    FROZEN_PARAMS = {"bollinger_period", "rsi_period", "macd_fast", "atr_period", "donchian_period"}
+    CONTINUOUS_PARAMS = {"bollinger_std"}
+    SEMI_STABLE_PARAMS = {"macd_slow", "macd_signal", "adx_period"}
+    
+    PARAM_LIMITS = {
+        "bollinger_period": 0.05,
+        "rsi_period": 0.05,
+        "macd_fast": 0.05,
+        "atr_period": 0.05,
+        "donchian_period": 0.05,
+        "bollinger_std": 0.15,
+        "macd_slow": 0.10,
+        "macd_signal": 0.10,
+        "adx_period": 0.10,
+    }
+    
+    max_param_change_pct: float = 0.20
+    
+    ATR_MULT_BEAR_LONG = 1.5
+    ATR_MULT_BEAR_SHORT = 2.5
+    ATR_MULT_BULL_LONG = 2.5
+    ATR_MULT_BULL_SHORT = 1.5
+    ATR_MULT_NEUTRAL = 2.0
+    
+    PROFIT_TARGET_BEAR_SHORT = 0.035
+    PROFIT_TARGET_DEFAULT = 0.025
+    MAX_HOLDING_BEAR = 30
+    MAX_HOLDING_DEFAULT = 50
+    
+    POSITION_SIZE_BEAR_LONG = 0.5
+    POSITION_SIZE_BEAR_SHORT = 1.0
+    POSITION_SIZE_BULL_LONG = 1.0
+    POSITION_SIZE_BULL_SHORT = 0.25
+    POSITION_SIZE_NEUTRAL = 0.75
+    
+    @classmethod
+    def get_atr_multiplier(cls, bias: DirectionalBias, direction: int) -> float:
+        if bias == DirectionalBias.BEAR:
+            return cls.ATR_MULT_BEAR_SHORT if direction == -1 else cls.ATR_MULT_BEAR_LONG
+        elif bias == DirectionalBias.BULL:
+            return cls.ATR_MULT_BULL_SHORT if direction == -1 else cls.ATR_MULT_BULL_LONG
+        return cls.ATR_MULT_NEUTRAL
+    
+    @classmethod
+    def get_profit_target(cls, bias: DirectionalBias, direction: int) -> float:
+        if bias == DirectionalBias.BEAR and direction == -1:
+            return cls.PROFIT_TARGET_BEAR_SHORT
+        return cls.PROFIT_TARGET_DEFAULT
+    
+    @classmethod
+    def get_max_holding(cls, bias: DirectionalBias) -> int:
+        if bias == DirectionalBias.BEAR:
+            return cls.MAX_HOLDING_BEAR
+        return cls.MAX_HOLDING_DEFAULT
+    
+    @classmethod
+    def get_position_size_multiplier(
+        cls,
+        bias: DirectionalBias,
+        direction: int,
+    ) -> float:
+        if bias == DirectionalBias.BEAR:
+            return cls.POSITION_SIZE_BEAR_SHORT if direction == -1 else cls.POSITION_SIZE_BEAR_LONG
+        elif bias == DirectionalBias.BULL:
+            return cls.POSITION_SIZE_BULL_SHORT if direction == -1 else cls.POSITION_SIZE_BULL_LONG
+        return cls.POSITION_SIZE_NEUTRAL
     
     def validate_param_change(
         self,
@@ -825,7 +1000,7 @@ class SafetyLimits:
         proposed: IndicatorConfig,
     ) -> Tuple[bool, List[str]]:
         """
-        Validate that proposed config is within safety bounds.
+        Validate that proposed config is within tiered safety bounds.
         
         Args:
             baseline: Current production config
@@ -850,11 +1025,12 @@ class SafetyLimits:
                 continue
             
             change_pct = abs(proposed_val - baseline_val) / abs(baseline_val)
+            limit = self.PARAM_LIMITS.get(name, self.max_param_change_pct)
             
-            if change_pct > self.max_param_change_pct:
+            if change_pct > limit:
                 violations.append(
                     f"{name}: {baseline_val} -> {proposed_val} "
-                    f"({change_pct:.1%} change exceeds {self.max_param_change_pct:.0%} limit)"
+                    f"({change_pct:.1%} change exceeds {limit:.0%} limit)"
                 )
         
         return len(violations) == 0, violations

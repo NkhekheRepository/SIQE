@@ -57,6 +57,19 @@ async def test_full_pipeline_produces_signals(settings, clock, market_event):
     strategy_engine = StrategyEngine(settings, clock)
     await strategy_engine.initialize()
 
+    import numpy as np
+    rng = np.random.RandomState(42)
+    base_price = 42000.0
+    for i in range(250):
+        price = base_price + rng.randn() * 50 + i * 5
+        spread = 10.0
+        strategy_engine.update_price_history(
+            market_event.symbol,
+            price + spread / 2,
+            price - spread / 2,
+            price,
+        )
+
     regime = RegimeResult(regime=RegimeType.MIXED, confidence=0.5, event_seq=clock.now)
     signals = await strategy_engine.generate_signals(market_event, regime_result=regime)
 

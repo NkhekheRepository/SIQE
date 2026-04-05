@@ -5,7 +5,7 @@ Deterministic: uses EventClock, no time-based logic.
 """
 import asyncio
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from collections import deque
 
 import numpy as np
@@ -14,7 +14,9 @@ import pandas as pd
 from core.clock import EventClock
 from models.trade import MarketEvent, Signal, SignalType
 from strategy_engine.indicators import TechnicalIndicators, generate_ensemble_signal
-from strategy_engine.config import IndicatorConfig
+from strategy_engine.config import (
+    IndicatorConfig, DirectionalBias, DirectionalBiasDetector, SafetyLimits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,13 +101,18 @@ class StrategyEngine:
             all_signals = []
             market_data = {event.symbol: event}
 
-            # TEMPORARILY DISABLE REGIME FILTERING TO DEBUG
+            price_hist = self._price_history.get(event.symbol, {})
+            closes_len = len(price_hist.get("closes", []))
+            
+            if closes_len < 30:
+                return None
+
+            # Enable regime filtering with directional bias
             for strategy_name in sorted(self.active_strategies):
-                # Skip regime checking for now to see if we get any signals
-                # if regime_result:
-                #     suitability = await self._check_regime_suitability(strategy_name, regime_result)
-                #     if not suitability:
-                #         continue
+                if regime_result:
+                    suitability = await self._check_regime_suitability(strategy_name, regime_result)
+                    if not suitability:
+                        continue
 
                 strategy = self.strategies[strategy_name]
                 signals = await strategy.generate_signals(market_data, self._price_history or {})
@@ -160,19 +167,20 @@ class StrategyEngine:
 
     async def _check_regime_suitability(self, strategy_name: str, regime_result) -> bool:
         # Define which strategies work best in which regimes
+        # Use regime.value for comparison (e.g., "trending_up" not "TRENDING_UP")
         regime_suitability = {
-            "mean_reversion": ["RANGING", "MIXED"],      # Mean reversion works best in ranging markets
-            "momentum": ["TRENDING", "MIXED"],          # Momentum works best in trending markets
-            "breakout": ["TRENDING", "VOLATILE"],       # Breakouts work in trending/volatile markets
-            "volatility_breakout": ["VOLATILE", "MIXED"], # Volatility breakouts work in volatile/mixed markets
-            "trend_following": ["TRENDING", "MIXED"]    # Trend following works in trending markets
+            "mean_reversion": ["ranging", "MIXED"],      # Mean reversion works best in ranging markets
+            "momentum": ["trending_up", "trending_down", "MIXED"],  # Momentum works in trending
+            "breakout": ["trending_up", "trending_down", "volatile", "VOLATILE"], # Breakouts work in trending/volatile
+            "volatility_breakout": ["volatile", "VOLATILE", "MIXED"], # Volatility breakouts work in volatile/mixed
+            "trend_following": ["trending_up", "trending_down", "MIXED"]  # Trend following in trending
         }
         
         if not regime_result:
             return True  # No regime info, allow all strategies
             
         regime = regime_result.regime.value if hasattr(regime_result.regime, 'value') else str(regime_result.regime)
-        suitable_regimes = regime_suitability.get(strategy_name, ["TRENDING", "RANGING", "VOLATILE", "MIXED"])
+        suitable_regimes = regime_suitability.get(strategy_name, ["trending_up", "trending_down", "ranging", "volatile", "MIXED"])
         
         return regime in suitable_regimes
 
@@ -240,6 +248,48 @@ class BaseStrategy:
         closes = pd.Series(list(history["closes"]))
         
         return TechnicalIndicators.calculate_all(highs, lows, closes, self._indicator_config.to_dict())
+    
+    def get_directional_bias(self, symbol: str, price_history: Optional[Dict[str, Any]] = None) -> DirectionalBias:
+        """Detect current market directional bias using EMA crossover."""
+        if price_history is None or symbol not in price_history:
+            return DirectionalBias.NEUTRAL
+        
+        closes = pd.Series(list(price_history[symbol]["closes"]))
+        if len(closes) < 200:
+            return DirectionalBias.NEUTRAL
+        
+        return DirectionalBiasDetector.detect(closes)
+    
+    def filter_signal_by_bias(
+        self,
+        signal_type: 'SignalType',
+        bias: DirectionalBias,
+    ) -> Tuple[bool, float]:
+        """
+        Filter signals based on directional bias with strength attenuation.
+        
+        Returns: (allow_signal, strength_multiplier)
+        - allow_signal: whether signal is allowed
+        - strength_multiplier: 0.0-1.0 for signal strength adjustment (capped at 1.0)
+        """
+        if bias == DirectionalBias.BEAR:
+            if signal_type == SignalType.LONG:
+                return True, 0.5   # Allow but attenuate longs
+            return True, 0.75      # Slightly amplify shorts
+        elif bias == DirectionalBias.BULL:
+            if signal_type == SignalType.SHORT:
+                return True, 0.25  # Allow but heavily attenuate shorts
+            return True, 0.75      # Slightly amplify longs
+        return True, 1.0           # Neutral - no change
+    
+    def apply_position_size_modifier(
+        self,
+        signal: 'Signal',
+        bias: DirectionalBias,
+    ) -> float:
+        """Apply position size multiplier based on bias and signal direction."""
+        direction = 1 if signal.signal_type == SignalType.LONG else -1
+        return SafetyLimits.get_position_size_multiplier(bias, direction)
 
 
 class MeanReversionStrategy(BaseStrategy):
@@ -254,7 +304,8 @@ class MeanReversionStrategy(BaseStrategy):
     async def generate_signals(self, market_data: Dict[str, MarketEvent], price_history: Optional[Dict[str, Any]] = None) -> Optional[List[Signal]]:
         if price_history is None:
             return None
-            
+        
+        bias = self.get_directional_bias(list(market_data.keys())[0] if market_data else "", price_history)
         signals = []
         for symbol, event in market_data.items():
             indicators = self._get_indicators(symbol, price_history)
@@ -275,19 +326,15 @@ class MeanReversionStrategy(BaseStrategy):
             strength = 0.0
             reason = ""
             
-            # Check for mean reversion opportunities
             if bb_signal.signal == "bullish" and rsi_signal.signal == "bullish":
-                # Both indicators agree: oversold
                 signal_type = SignalType.LONG
                 strength = (bb_signal.strength + rsi_signal.strength) / 2
                 reason = f"Mean reversion LONG: BB oversold (strength={bb_signal.strength:.2f}), RSI={indicators['rsi']['value']:.1f}"
             elif bb_signal.signal == "bearish" and rsi_signal.signal == "bearish":
-                # Both indicators agree: overbought
                 signal_type = SignalType.SHORT
                 strength = (bb_signal.strength + rsi_signal.strength) / 2
                 reason = f"Mean reversion SHORT: BB overbought (strength={bb_signal.strength:.2f}), RSI={indicators['rsi']['value']:.1f}"
             elif bb_signal.strength > 0.6:
-                # Strong Bollinger signal only
                 if bb_signal.signal == "bullish":
                     signal_type = SignalType.LONG
                     strength = bb_signal.strength * 0.7
@@ -298,15 +345,23 @@ class MeanReversionStrategy(BaseStrategy):
                     reason = f"BB overbought (strength={bb_signal.strength:.2f})"
             
             if signal_type and strength >= 0.3:
+                allow, strength_mult = self.filter_signal_by_bias(signal_type, bias)
+                if not allow:
+                    continue
                 seq = self.clock.tick()
+                pos_mult = self.apply_position_size_modifier(
+                    Signal(signal_id="", symbol=symbol, signal_type=signal_type, 
+                           strength=strength, price=mid_price, strategy="", reason="", event_seq=0),
+                    bias
+                )
                 signals.append(Signal(
                     signal_id=f"sig_mr_{seq}",
                     symbol=symbol,
                     signal_type=signal_type,
-                    strength=strength,
+                    strength=strength * strength_mult * pos_mult,
                     price=mid_price,
                     strategy="mean_reversion",
-                    reason=reason,
+                    reason=f"{reason} | bias={bias.value}",
                     event_seq=seq,
                 ))
         
@@ -325,7 +380,8 @@ class MomentumStrategy(BaseStrategy):
     async def generate_signals(self, market_data: Dict[str, MarketEvent], price_history: Optional[Dict[str, Any]] = None) -> Optional[List[Signal]]:
         if price_history is None:
             return None
-            
+        
+        bias = self.get_directional_bias(list(market_data.keys())[0] if market_data else "", price_history)
         signals = []
         for symbol, event in market_data.items():
             indicators = self._get_indicators(symbol, price_history)
@@ -349,7 +405,6 @@ class MomentumStrategy(BaseStrategy):
             strength = 0.0
             reason = ""
             
-            # Require strong trend (ADX > 20)
             if trend in ["strong", "moderate"]:
                 if macd_signal.signal == "bullish" and macd_signal.metadata.get("condition") == "bullish_crossover":
                     signal_type = SignalType.LONG
@@ -361,15 +416,23 @@ class MomentumStrategy(BaseStrategy):
                     reason = f"Momentum SHORT: MACD bearish crossover, ADX={adx_value:.1f} ({trend})"
             
             if signal_type and strength >= 0.4:
+                allow, strength_mult = self.filter_signal_by_bias(signal_type, bias)
+                if not allow:
+                    continue
                 seq = self.clock.tick()
+                pos_mult = self.apply_position_size_modifier(
+                    Signal(signal_id="", symbol=symbol, signal_type=signal_type, 
+                           strength=strength, price=mid_price, strategy="", reason="", event_seq=0),
+                    bias
+                )
                 signals.append(Signal(
                     signal_id=f"sig_mom_{seq}",
                     symbol=symbol,
                     signal_type=signal_type,
-                    strength=strength,
+                    strength=strength * strength_mult * pos_mult,
                     price=mid_price,
                     strategy="momentum",
-                    reason=reason,
+                    reason=f"{reason} | bias={bias.value}",
                     event_seq=seq,
                 ))
         
@@ -388,7 +451,8 @@ class BreakoutStrategy(BaseStrategy):
     async def generate_signals(self, market_data: Dict[str, MarketEvent], price_history: Optional[Dict[str, Any]] = None) -> Optional[List[Signal]]:
         if price_history is None:
             return None
-            
+        
+        bias = self.get_directional_bias(list(market_data.keys())[0] if market_data else "", price_history)
         signals = []
         for symbol, event in market_data.items():
             indicators = self._get_indicators(symbol, price_history)
@@ -412,7 +476,6 @@ class BreakoutStrategy(BaseStrategy):
             strength = 0.0
             reason = ""
             
-            # Breakout signals
             if dc_signal.metadata.get("condition") == "upper_breakout":
                 signal_type = SignalType.LONG
                 strength = dc_signal.strength
@@ -422,7 +485,6 @@ class BreakoutStrategy(BaseStrategy):
                 strength = dc_signal.strength
                 reason = f"Breakout SHORT: Below lower channel (${dc_lower:.2f}), ATR=${atr_value:.2f}"
             elif dc_signal.strength > 0.5:
-                # Near breakout
                 if dc_signal.signal == "bullish":
                     signal_type = SignalType.LONG
                     strength = dc_signal.strength * 0.6
@@ -433,15 +495,23 @@ class BreakoutStrategy(BaseStrategy):
                     reason = f"Near lower channel breakdown"
             
             if signal_type and strength >= 0.3:
+                allow, strength_mult = self.filter_signal_by_bias(signal_type, bias)
+                if not allow:
+                    continue
                 seq = self.clock.tick()
+                pos_mult = self.apply_position_size_modifier(
+                    Signal(signal_id="", symbol=symbol, signal_type=signal_type, 
+                           strength=strength, price=mid_price, strategy="", reason="", event_seq=0),
+                    bias
+                )
                 signals.append(Signal(
                     signal_id=f"sig_bo_{seq}",
                     symbol=symbol,
                     signal_type=signal_type,
-                    strength=strength,
+                    strength=strength * strength_mult * pos_mult,
                     price=mid_price,
                     strategy="breakout",
-                    reason=reason,
+                    reason=f"{reason} | bias={bias.value}",
                     event_seq=seq,
                 ))
         
@@ -460,7 +530,8 @@ class VolatilityBreakoutStrategy(BaseStrategy):
     async def generate_signals(self, market_data: Dict[str, MarketEvent], price_history: Optional[Dict[str, Any]] = None) -> Optional[List[Signal]]:
         if not price_history:
             return None
-            
+        
+        bias = self.get_directional_bias(list(market_data.keys())[0] if market_data else "", price_history)
         signals = []
         for symbol, event in market_data.items():
             indicators = self._get_indicators(symbol, price_history)
@@ -502,15 +573,23 @@ class VolatilityBreakoutStrategy(BaseStrategy):
                     reason = f"Volatility breakdown SHORT: ratio={volatility_ratio:.2f}, ATR=${atr_value:.2f}"
             
             if signal_type and strength >= 0.25:
+                allow, strength_mult = self.filter_signal_by_bias(signal_type, bias)
+                if not allow:
+                    continue
                 seq = self.clock.tick()
+                pos_mult = self.apply_position_size_modifier(
+                    Signal(signal_id="", symbol=symbol, signal_type=signal_type, 
+                           strength=strength, price=mid_price, strategy="", reason="", event_seq=0),
+                    bias
+                )
                 signals.append(Signal(
                     signal_id=f"sig_vb_{seq}",
                     symbol=symbol,
                     signal_type=signal_type,
-                    strength=strength,
+                    strength=strength * strength_mult * pos_mult,
                     price=mid_price,
                     strategy="volatility_breakout",
-                    reason=reason,
+                    reason=f"{reason} | bias={bias.value}",
                     event_seq=seq,
                 ))
         
@@ -529,7 +608,8 @@ class TrendFollowingStrategy(BaseStrategy):
     async def generate_signals(self, market_data: Dict[str, MarketEvent], price_history: Optional[Dict[str, Any]] = None) -> Optional[List[Signal]]:
         if not price_history:
             return None
-            
+        
+        bias = self.get_directional_bias(list(market_data.keys())[0] if market_data else "", price_history)
         signals = []
         for symbol, event in market_data.items():
             indicators = self._get_indicators(symbol, price_history)
@@ -564,15 +644,23 @@ class TrendFollowingStrategy(BaseStrategy):
                 reason = f"EMA bearish crossover: fast={ema_fast:.2f}, slow={ema_slow:.2f}"
             
             if signal_type and strength >= 0.25:
+                allow, strength_mult = self.filter_signal_by_bias(signal_type, bias)
+                if not allow:
+                    continue
                 seq = self.clock.tick()
+                pos_mult = self.apply_position_size_modifier(
+                    Signal(signal_id="", symbol=symbol, signal_type=signal_type, 
+                           strength=strength, price=mid_price, strategy="", reason="", event_seq=0),
+                    bias
+                )
                 signals.append(Signal(
                     signal_id=f"sig_tf_{seq}",
                     symbol=symbol,
                     signal_type=signal_type,
-                    strength=strength,
+                    strength=strength * strength_mult * pos_mult,
                     price=mid_price,
                     strategy="trend_following",
-                    reason=reason,
+                    reason=f"{reason} | bias={bias.value}",
                     event_seq=seq,
                 ))
         

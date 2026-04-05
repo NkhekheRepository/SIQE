@@ -1,0 +1,608 @@
+{
+  "data_quality": {
+    "is_valid": true,
+    "row_count": 181,
+    "date_range": [
+      "2026-03-05 00:00:00",
+      "2026-04-04 00:00:00"
+    ],
+    "missing_values": {
+      "high": 0,
+      "low": 0,
+      "open": 0,
+      "close": 0
+    },
+    "price_anomalies": [],
+    "volume_stats": {
+      "mean": 30498.94770165746,
+      "median": 25041.797,
+      "min": 3902.732,
+      "max": 98820.429,
+      "zero_count": 0
+    },
+    "warnings": []
+  },
+  "walk_forward_15m": {
+    "passed": "False",
+    "n_windows": 21,
+    "avg_test_sharpe": 0.25800474642700516,
+    "avg_test_return": 1.3708243556633741,
+    "avg_test_drawdown": -0.026939700683640027,
+    "pass_rate": 1.0,
+    "min_test_sharpe": -0.9978266847475846,
+    "max_test_sharpe": 1.5066098646642139,
+    "total_train_trades": 18086,
+    "total_test_trades": 4733,
+    "windows": [
+      {
+        "window_id": 0,
+        "train_sharpe": -0.3856483268932665,
+        "test_sharpe": -0.09842562420418652,
+        "train_return": -3.3629682770346725,
+        "test_return": -0.45367020917491674,
+        "train_trades": 826,
+        "test_trades": 234,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.9674996517121546,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 24,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 1,
+        "train_sharpe": 0.25737791624714235,
+        "test_sharpe": 1.3669404202331978,
+        "train_return": 4.413387763309684,
+        "test_return": 7.826888549776467,
+        "train_trades": 862,
+        "test_trades": 230,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.73787794552478,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 28,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 2,
+        "train_sharpe": 0.7950045223445814,
+        "test_sharpe": 1.5066098646642139,
+        "train_return": 13.290305442726623,
+        "test_return": 9.616710529801974,
+        "train_trades": 864,
+        "test_trades": 232,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7857200907531645,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 27,
+          "macd_signal": 8,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 3,
+        "train_sharpe": 0.9077192603499612,
+        "test_sharpe": 0.4161588354217888,
+        "train_return": 16.52080536233058,
+        "test_return": 1.3815833006748601,
+        "train_trades": 888,
+        "test_trades": 246,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7089608069355873,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 28,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 15
+        }
+      },
+      {
+        "window_id": 4,
+        "train_sharpe": 0.7675060136258879,
+        "test_sharpe": -0.42078739008998145,
+        "train_return": 7.649814671797595,
+        "test_return": -1.1727145316608123,
+        "train_trades": 875,
+        "test_trades": 211,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7857200907531645,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 27,
+          "macd_signal": 8,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 5,
+        "train_sharpe": 0.3104305208330614,
+        "test_sharpe": 0.1372378005659344,
+        "train_return": 3.7907707496810605,
+        "test_return": 0.557577500170936,
+        "train_trades": 845,
+        "test_trades": 197,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7543638607196925,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 26,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 15
+        }
+      },
+      {
+        "window_id": 6,
+        "train_sharpe": 0.40248928433389686,
+        "test_sharpe": 0.39961263112515094,
+        "train_return": 7.356973298000913,
+        "test_return": 1.9445601266160573,
+        "train_trades": 845,
+        "test_trades": 219,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.9674996517121546,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 24,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 7,
+        "train_sharpe": -0.13873541020883368,
+        "test_sharpe": -0.47206352826203135,
+        "train_return": -2.3507088494642003,
+        "test_return": -3.3805775986876396,
+        "train_trades": 830,
+        "test_trades": 223,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7543638607196925,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 26,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 15
+        }
+      },
+      {
+        "window_id": 8,
+        "train_sharpe": 0.0007069147137200296,
+        "test_sharpe": 0.023380528900140408,
+        "train_return": -0.18787736935375055,
+        "test_return": 0.053521178709026174,
+        "train_trades": 819,
+        "test_trades": 220,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.9674996517121546,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 24,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 9,
+        "train_sharpe": -0.43766687438145546,
+        "test_sharpe": 1.02910755305217,
+        "train_return": -7.795507254326051,
+        "test_return": 3.3655782205467277,
+        "train_trades": 868,
+        "test_trades": 224,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 2.1874597911474165,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 28,
+          "macd_signal": 8,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 10,
+        "train_sharpe": -0.2878420034480396,
+        "test_sharpe": -0.3002969188776544,
+        "train_return": -4.674353176103052,
+        "test_return": -1.3940803222260323,
+        "train_trades": 880,
+        "test_trades": 216,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.71100303340639,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 28,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 11,
+        "train_sharpe": 0.11170264573687474,
+        "test_sharpe": 0.5176269640684451,
+        "train_return": 1.2061274656738563,
+        "test_return": 2.0100258639378588,
+        "train_trades": 855,
+        "test_trades": 225,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.9674996517121546,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 24,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 12,
+        "train_sharpe": 0.3719183754264528,
+        "test_sharpe": -0.9978266847475846,
+        "train_return": 4.854362902366471,
+        "test_return": -3.845503057193256,
+        "train_trades": 844,
+        "test_trades": 215,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 2.17792579211614,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 25,
+          "macd_signal": 10,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 13,
+        "train_sharpe": -0.29869210914143085,
+        "test_sharpe": 0.4831215796149139,
+        "train_return": -3.9992305036987474,
+        "test_return": 4.452567746591063,
+        "train_trades": 825,
+        "test_trades": 243,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7857200907531645,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 27,
+          "macd_signal": 8,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 14,
+        "train_sharpe": 0.26824918553758004,
+        "test_sharpe": -0.04919597458853914,
+        "train_return": 5.491290883201305,
+        "test_return": -0.23564058492814288,
+        "train_trades": 864,
+        "test_trades": 225,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7543638607196925,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 26,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 15
+        }
+      },
+      {
+        "window_id": 15,
+        "train_sharpe": 0.23241074079605284,
+        "test_sharpe": -0.5765279690742666,
+        "train_return": 4.155874905302026,
+        "test_return": -2.985511296096466,
+        "train_trades": 879,
+        "test_trades": 236,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7543638607196925,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 26,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 15
+        }
+      },
+      {
+        "window_id": 16,
+        "train_sharpe": 0.25025061744657395,
+        "test_sharpe": 0.6877076822362782,
+        "train_return": 6.7415044658597045,
+        "test_return": 3.7443368329669102,
+        "train_trades": 897,
+        "test_trades": 238,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7543638607196925,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 26,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 15
+        }
+      },
+      {
+        "window_id": 17,
+        "train_sharpe": 0.13223225070158842,
+        "test_sharpe": 0.9456988187346459,
+        "train_return": 2.200917269938518,
+        "test_return": 3.1940871894662326,
+        "train_trades": 871,
+        "test_trades": 231,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 2.17792579211614,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 25,
+          "macd_signal": 10,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 18,
+        "train_sharpe": -0.2205374499377058,
+        "test_sharpe": -0.08678904117747635,
+        "train_return": -2.7801768977397057,
+        "test_return": -0.2335017520680438,
+        "train_trades": 889,
+        "test_trades": 228,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7857200907531645,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 27,
+          "macd_signal": 8,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 14
+        }
+      },
+      {
+        "window_id": 19,
+        "train_sharpe": 0.24681163857951685,
+        "test_sharpe": 0.7231882669420666,
+        "train_return": 3.0196719174775843,
+        "test_return": 3.6088347510271346,
+        "train_trades": 897,
+        "test_trades": 211,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7543638607196925,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 26,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 15
+        }
+      },
+      {
+        "window_id": 20,
+        "train_sharpe": 0.8369539129487162,
+        "test_sharpe": 0.18362186042988368,
+        "train_return": 17.355248255566337,
+        "test_return": 0.7322390306809146,
+        "train_trades": 863,
+        "test_trades": 229,
+        "passed": true,
+        "config": {
+          "bollinger_period": 20,
+          "bollinger_std": 1.7543638607196925,
+          "rsi_period": 14,
+          "macd_fast": 12,
+          "macd_slow": 26,
+          "macd_signal": 9,
+          "atr_period": 14,
+          "donchian_period": 20,
+          "adx_period": 15
+        }
+      }
+    ]
+  },
+  "walk_forward_4h": {
+    "passed": false,
+    "n_windows": 0,
+    "avg_test_sharpe": 0.0,
+    "avg_test_return": 0.0,
+    "avg_test_drawdown": 0.0,
+    "pass_rate": 0.0,
+    "min_test_sharpe": 0.0,
+    "max_test_sharpe": 0.0,
+    "total_train_trades": 0,
+    "total_test_trades": 0,
+    "windows": []
+  },
+  "stability_15m": {
+    "parameters": {
+      "bollinger_period": {
+        "mean": 20.0,
+        "std": 0.0,
+        "cv": 0.0,
+        "min": 20.0,
+        "max": 20.0,
+        "stable": true
+      },
+      "bollinger_std": {
+        "mean": 1.8568847217212179,
+        "std": 0.1566789463707576,
+        "cv": 0.08437731461623846,
+        "min": 1.7089608069355873,
+        "max": 2.1874597911474165,
+        "stable": true
+      },
+      "rsi_period": {
+        "mean": 14.0,
+        "std": 0.0,
+        "cv": 0.0,
+        "min": 14.0,
+        "max": 14.0,
+        "stable": true
+      },
+      "macd_fast": {
+        "mean": 12.0,
+        "std": 0.0,
+        "cv": 0.0,
+        "min": 12.0,
+        "max": 12.0,
+        "stable": true
+      },
+      "macd_slow": {
+        "mean": 26.095238095238095,
+        "std": 1.341809790819559,
+        "cv": 0.051419718261333465,
+        "min": 24.0,
+        "max": 28.0,
+        "stable": true
+      },
+      "macd_signal": {
+        "mean": 8.857142857142858,
+        "std": 0.5593971487843205,
+        "cv": 0.06315774260468134,
+        "min": 8.0,
+        "max": 10.0,
+        "stable": true
+      },
+      "atr_period": {
+        "mean": 14.0,
+        "std": 0.0,
+        "cv": 0.0,
+        "min": 14.0,
+        "max": 14.0,
+        "stable": true
+      },
+      "donchian_period": {
+        "mean": 20.0,
+        "std": 0.0,
+        "cv": 0.0,
+        "min": 20.0,
+        "max": 20.0,
+        "stable": true
+      },
+      "adx_period": {
+        "mean": 14.380952380952381,
+        "std": 0.4856209060564557,
+        "cv": 0.033768341149621094,
+        "min": 14.0,
+        "max": 15.0,
+        "stable": true
+      }
+    },
+    "stable_count": 9,
+    "unstable_count": 0,
+    "stable_params": [
+      "bollinger_period",
+      "bollinger_std",
+      "rsi_period",
+      "macd_fast",
+      "macd_slow",
+      "macd_signal",
+      "atr_period",
+      "donchian_period",
+      "adx_period"
+    ],
+    "unstable_params": []
+  },
+  "ab_test_bayesian_vs_default_15m": {
+    "baseline_sharpe": 0.1446668352355254,
+    "baseline_return": 39.441392576558044,
+    "treatment_sharpe": 0.14406596075166372,
+    "treatment_return": 39.30623235333798,
+    "sharpe_p_value": 0.8261615737445183,
+    "sharpe_significant": "False",
+    "treatment_wins": false,
+    "confidence": 0.0,
+    "recommendation": "inconclusive",
+    "n_simulations": 30
+  },
+  "safety_limits": {
+    "total_windows": 21,
+    "windows_with_violations": 7,
+    "violation_rate": 0.3333333333333333,
+    "sample_violations": [
+      "macd_signal: 9 -> 8 (11.1% change exceeds 10% limit)",
+      "macd_signal: 9 -> 8 (11.1% change exceeds 10% limit)",
+      "macd_signal: 9 -> 8 (11.1% change exceeds 10% limit)",
+      "macd_signal: 9 -> 10 (11.1% change exceeds 10% limit)",
+      "macd_signal: 9 -> 8 (11.1% change exceeds 10% limit)"
+    ],
+    "circuit_breaker_status": "not_triggered"
+  }
+}
