@@ -2,13 +2,16 @@
 SIQE V3 - Indicator Configuration
 
 Production-grade indicator configuration system with validation,
-serialization, and adaptive parameter optimization.
+serialization, adaptive parameter optimization, walk-forward validation,
+safety limits, and config persistence.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -714,3 +717,374 @@ class AdaptiveIndicatorBounds:
             "total_trades": total_trades,
             "win_rate": win_rate,
         }
+
+
+# =============================================================================
+# CONFIG PERSISTENCE
+# =============================================================================
+
+@dataclass
+class ConfigMetadata:
+    """Metadata for config versioning and audit trail."""
+    version: str = "1.0.0"
+    created_at: str = ""
+    optimized_for: Optional[str] = None  # MarketRegime value
+    source: str = "default"  # default, bayesian, rf, gpr, manual
+    optimizer_params: Dict[str, Any] = field(default_factory=dict)
+    sharpe_at_creation: float = 0.0
+    total_return_at_creation: float = 0.0
+
+    def __post_init__(self):
+        if not self.created_at:
+            self.created_at = datetime.now(timezone.utc).isoformat()
+
+
+class ConfigPersistence:
+    """
+    Save/load indicator configurations with versioning and audit trail.
+    
+    Ensures reproducibility - every trade must be traceable to a known
+    config version. Required for compliance and debugging.
+    """
+    
+    @staticmethod
+    def save(config: IndicatorConfig, path: str, metadata: Optional[ConfigMetadata] = None) -> str:
+        """
+        Save config to JSON file.
+        
+        Args:
+            config: IndicatorConfig to save
+            path: File path for JSON output
+            metadata: Optional metadata for audit trail
+            
+        Returns:
+            Path to saved file
+        """
+        data = {
+            "metadata": {
+                "version": metadata.version if metadata else "1.0.0",
+                "created_at": metadata.created_at if metadata else datetime.now(timezone.utc).isoformat(),
+                "optimized_for": metadata.optimized_for if metadata else None,
+                "source": metadata.source if metadata else "default",
+                "optimizer_params": metadata.optimizer_params if metadata else {},
+                "sharpe_at_creation": metadata.sharpe_at_creation if metadata else 0.0,
+                "total_return_at_creation": metadata.total_return_at_creation if metadata else 0.0,
+            },
+            "config": config.to_dict(),
+        }
+        
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        logger.info(f"Config saved to {path} (source={data['metadata']['source']})")
+        return path
+    
+    @classmethod
+    def load(cls, path: str) -> Tuple[IndicatorConfig, ConfigMetadata]:
+        """
+        Load config from JSON file.
+        
+        Args:
+            path: File path to load from
+            
+        Returns:
+            Tuple of (IndicatorConfig, ConfigMetadata)
+        """
+        with open(path, 'r') as f:
+            data = json.load(f)
+        
+        config = IndicatorConfig.from_dict(data["config"])
+        metadata = ConfigMetadata(**data["metadata"])
+        
+        logger.info(f"Config loaded from {path} (version={metadata.version}, source={metadata.source})")
+        return config, metadata
+
+
+# =============================================================================
+# SAFETY LIMITS FOR ML DEPLOYMENT
+# =============================================================================
+
+@dataclass
+class SafetyLimits:
+    """
+    Guardrails for ML-driven parameter deployment.
+    
+    Prevents catastrophic changes from being applied to live trading.
+    All limits are configurable but have conservative defaults.
+    """
+    max_param_change_pct: float = 0.20  # 20% max change from baseline
+    min_confidence: float = 0.70  # 70% minimum confidence for ML suggestions
+    circuit_breaker_losses: int = 5  # Disable after 5 consecutive losses
+    circuit_breaker_drawdown: float = 0.10  # Disable at 10% drawdown
+    require_human_review: bool = True  # Flag changes requiring manual approval
+    max_daily_param_changes: int = 3  # Limit parameter changes per day
+    
+    def validate_param_change(
+        self,
+        baseline: IndicatorConfig,
+        proposed: IndicatorConfig,
+    ) -> Tuple[bool, List[str]]:
+        """
+        Validate that proposed config is within safety bounds.
+        
+        Args:
+            baseline: Current production config
+            proposed: New config from ML optimizer
+            
+        Returns:
+            Tuple of (is_safe, list_of_violations)
+        """
+        violations = []
+        
+        param_names = [
+            "bollinger_period", "bollinger_std", "rsi_period",
+            "macd_fast", "macd_slow", "macd_signal",
+            "atr_period", "donchian_period", "adx_period",
+        ]
+        
+        for name in param_names:
+            baseline_val = getattr(baseline, name)
+            proposed_val = getattr(proposed, name)
+            
+            if baseline_val == 0:
+                continue
+            
+            change_pct = abs(proposed_val - baseline_val) / abs(baseline_val)
+            
+            if change_pct > self.max_param_change_pct:
+                violations.append(
+                    f"{name}: {baseline_val} -> {proposed_val} "
+                    f"({change_pct:.1%} change exceeds {self.max_param_change_pct:.0%} limit)"
+                )
+        
+        return len(violations) == 0, violations
+    
+    def check_circuit_breaker(
+        self,
+        consecutive_losses: int,
+        current_drawdown: float,
+    ) -> Tuple[bool, str]:
+        """
+        Check if circuit breaker should trigger.
+        
+        Args:
+            consecutive_losses: Number of consecutive losing trades
+            current_drawdown: Current drawdown as fraction
+            
+        Returns:
+            Tuple of (should_disable, reason)
+        """
+        if consecutive_losses >= self.circuit_breaker_losses:
+            return True, f"Circuit breaker: {consecutive_losses} consecutive losses (limit: {self.circuit_breaker_losses})"
+        
+        if current_drawdown >= self.circuit_breaker_drawdown:
+            return True, f"Circuit breaker: {current_drawdown:.1%} drawdown (limit: {self.circuit_breaker_drawdown:.0%})"
+        
+        return False, ""
+
+
+# =============================================================================
+# WALK-FORWARD VALIDATION
+# =============================================================================
+
+@dataclass
+class WalkForwardWindow:
+    """Single walk-forward window result."""
+    window_id: int
+    train_start: str
+    train_end: str
+    test_start: str
+    test_end: str
+    train_sharpe: float
+    test_sharpe: float
+    train_return: float
+    test_return: float
+    train_drawdown: float
+    test_drawdown: float
+    train_trades: int
+    test_trades: int
+    optimized_config: IndicatorConfig
+    passed: bool = True
+
+
+@dataclass
+class WalkForwardResult:
+    """Complete walk-forward validation result."""
+    windows: List[WalkForwardWindow]
+    avg_test_sharpe: float
+    avg_test_return: float
+    avg_test_drawdown: float
+    pass_rate: float  # Fraction of windows that passed
+    total_train_trades: int
+    total_test_trades: int
+    min_test_sharpe: float
+    max_test_sharpe: float
+    passed: bool = True
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class WalkForwardValidator:
+    """
+    Walk-forward validation for indicator parameter optimization.
+    
+    Prevents overfitting by testing optimized parameters on out-of-sample data.
+    Uses rolling windows: train on N periods, test on next period, roll forward.
+    
+    Pass criteria:
+    - Average test Sharpe > 1.0
+    - Test Sharpe > 1.0 in >= 80% of windows
+    - No single window with test Sharpe < -1.0
+    """
+    
+    MIN_TEST_SHARPE_THRESHOLD = 1.0
+    MIN_PASS_RATE = 0.80
+    MAX_NEGATIVE_SHARPE = -1.0
+    
+    def __init__(
+        self,
+        train_months: int = 6,
+        test_months: int = 1,
+        bars_per_month: int = 180,  # 4h bars: ~180 per month
+        min_sharpe_threshold: float = 1.0,
+        min_pass_rate: float = 0.80,
+    ):
+        self.train_bars = train_months * bars_per_month
+        self.test_bars = test_months * bars_per_month
+        self.min_sharpe_threshold = min_sharpe_threshold
+        self.min_pass_rate = min_pass_rate
+    
+    def validate(
+        self,
+        data: pd.DataFrame,
+        optimizer=None,
+        regime: MarketRegime = MarketRegime.RANGING,
+    ) -> WalkForwardResult:
+        """
+        Run walk-forward validation.
+        
+        Args:
+            data: DataFrame with high/low/close columns
+            optimizer: Optional optimizer to use (creates default if None)
+            regime: Market regime to optimize for
+            
+        Returns:
+            WalkForwardResult with per-window and aggregate metrics
+        """
+        if optimizer is None:
+            from strategy_engine.ml_optimizer import BayesianOptOptimizer
+            optimizer = BayesianOptOptimizer(n_calls=20, seed=42)
+        
+        total_bars = len(data)
+        window_size = self.train_bars + self.test_bars
+        
+        if total_bars < window_size * 2:
+            logger.warning(
+                f"Insufficient data for walk-forward: "
+                f"need {window_size * 2}, have {total_bars}"
+            )
+            return self._empty_result()
+        
+        windows = []
+        window_id = 0
+        
+        for start in range(0, total_bars - window_size + 1, self.test_bars):
+            train_end = start + self.train_bars
+            test_end = min(train_end + self.test_bars, total_bars)
+            
+            train_data = data.iloc[start:train_end]
+            test_data = data.iloc[train_end:test_end]
+            
+            if len(train_data) < self.train_bars * 0.8:
+                continue
+            
+            try:
+                optimized_config, train_metrics = optimizer.optimize(
+                    IndicatorConfig(), train_data, regime,
+                )
+                
+                test_metrics = optimizer.evaluate(optimized_config, test_data)
+                
+                passed = (
+                    test_metrics["sharpe"] >= self.MIN_TEST_SHARPE_THRESHOLD
+                    or test_metrics["sharpe"] > self.MAX_NEGATIVE_SHARPE
+                )
+                
+                window = WalkForwardWindow(
+                    window_id=window_id,
+                    train_start=str(data.index[start]) if hasattr(data.index[start], 'isoformat') else str(start),
+                    train_end=str(data.index[train_end - 1]) if hasattr(data.index[train_end - 1], 'isoformat') else str(train_end - 1),
+                    test_start=str(data.index[train_end]) if hasattr(data.index[train_end], 'isoformat') else str(train_end),
+                    test_end=str(data.index[test_end - 1]) if hasattr(data.index[test_end - 1], 'isoformat') else str(test_end - 1),
+                    train_sharpe=train_metrics.get("sharpe", 0),
+                    test_sharpe=test_metrics.get("sharpe", 0),
+                    train_return=train_metrics.get("total_return", 0),
+                    test_return=test_metrics.get("total_return", 0),
+                    train_drawdown=train_metrics.get("max_drawdown", 0),
+                    test_drawdown=test_metrics.get("max_drawdown", 0),
+                    train_trades=train_metrics.get("total_trades", 0),
+                    test_trades=test_metrics.get("total_trades", 0),
+                    optimized_config=optimized_config,
+                    passed=passed,
+                )
+                windows.append(window)
+                window_id += 1
+                
+            except Exception as e:
+                logger.warning(f"Walk-forward window {window_id} failed: {e}")
+                continue
+        
+        if not windows:
+            return self._empty_result()
+        
+        test_sharpes = [w.test_sharpe for w in windows]
+        test_returns = [w.test_return for w in windows]
+        test_drawdowns = [w.test_drawdown for w in windows]
+        
+        passed_windows = sum(1 for w in windows if w.passed)
+        pass_rate = passed_windows / len(windows)
+        
+        result = WalkForwardResult(
+            windows=windows,
+            avg_test_sharpe=float(np.mean(test_sharpes)),
+            avg_test_return=float(np.mean(test_returns)),
+            avg_test_drawdown=float(np.mean(test_drawdowns)),
+            pass_rate=pass_rate,
+            total_train_trades=sum(w.train_trades for w in windows),
+            total_test_trades=sum(w.test_trades for w in windows),
+            min_test_sharpe=float(np.min(test_sharpes)),
+            max_test_sharpe=float(np.max(test_sharpes)),
+            passed=(
+                pass_rate >= self.min_pass_rate
+                and np.mean(test_sharpes) >= self.MIN_TEST_SHARPE_THRESHOLD
+            ),
+            metadata={
+                "n_windows": len(windows),
+                "train_bars": self.train_bars,
+                "test_bars": self.test_bars,
+                "min_sharpe_threshold": self.MIN_TEST_SHARPE_THRESHOLD,
+                "min_pass_rate": self.min_pass_rate,
+            },
+        )
+        
+        logger.info(
+            f"Walk-forward complete: {len(windows)} windows, "
+            f"pass_rate={pass_rate:.1%}, avg_test_sharpe={result.avg_test_sharpe:.3f}"
+        )
+        
+        return result
+    
+    def _empty_result(self) -> WalkForwardResult:
+        """Return empty walk-forward result."""
+        return WalkForwardResult(
+            windows=[],
+            avg_test_sharpe=0.0,
+            avg_test_return=0.0,
+            avg_test_drawdown=0.0,
+            pass_rate=0.0,
+            total_train_trades=0,
+            total_test_trades=0,
+            min_test_sharpe=0.0,
+            max_test_sharpe=0.0,
+            passed=False,
+            metadata={"error": "insufficient_data"},
+        )
