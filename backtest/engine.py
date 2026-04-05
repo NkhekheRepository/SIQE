@@ -11,10 +11,15 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 
 import numpy as np
+import pandas as pd
 
 from core.clock import EventClock
 from config.settings import Settings
 from strategy_engine.strategy_base import StrategyEngine
+from strategy_engine.config import (
+    IndicatorConfig, RegimeDetector, AdaptiveIndicatorBounds,
+    MarketRegime, ParameterSweepResult,
+)
 from ev_engine.ev_calculator import EVEngine
 from decision_engine.decision_maker import DecisionEngine
 from risk_engine.risk_manager import RiskEngine
@@ -431,3 +436,45 @@ class BacktestEngine:
             "1mo": 12,
         }
         return mapping.get(timeframe, 252)
+
+    def run_parameter_sweep(
+        self,
+        data: pd.DataFrame,
+        regimes: Optional[List[MarketRegime]] = None,
+        n_cma_iterations: int = 30,
+        grid_resolution: int = 5,
+        seed: int = 42,
+    ) -> Dict[MarketRegime, ParameterSweepResult]:
+        """
+        Sweep indicator parameters across market regimes.
+        
+        Args:
+            data: DataFrame with 'high', 'low', 'close' columns
+            regimes: List of regimes to optimize for (default: all)
+            n_cma_iterations: Number of CMA-ES iterations
+            grid_resolution: Grid search resolution per dimension
+            seed: Random seed for reproducibility
+            
+        Returns:
+            Dict mapping MarketRegime to ParameterSweepResult
+        """
+        if regimes is None:
+            regimes = list(MarketRegime)
+        
+        adaptive_bounds = AdaptiveIndicatorBounds(
+            n_cma_iterations=n_cma_iterations,
+            grid_resolution=grid_resolution,
+            seed=seed,
+        )
+        
+        results = {}
+        for regime in regimes:
+            logger.info(f"Running parameter sweep for regime: {regime.value}")
+            result = adaptive_bounds.sweep_parameters(data, regime)
+            results[regime] = result
+        
+        logger.info(
+            f"Parameter sweep complete. Optimized {len(results)} regimes."
+        )
+        
+        return results
