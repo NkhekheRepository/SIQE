@@ -1,0 +1,288 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "SIQE V3 Trading Engine",
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "10s",
+    "panels": [
+      {
+        "type": "stat",
+        "title": "Engine Status",
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "siqe_engine_running",
+            "legendFormat": "Running",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": null},
+                {"color": "green", "value": 1}
+              ]
+            },
+            "mappings": [
+              {"options": {"0": {"text": "Stopped"}, "1": {"text": "Running"}}, "type": "value"}
+            ]
+          }
+        },
+        "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "textMode": "value"}
+      },
+      {
+        "type": "stat",
+        "title": "Current Equity",
+        "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "siqe_equity",
+            "legendFormat": "Equity",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2
+          }
+        },
+        "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "textMode": "value"}
+      },
+      {
+        "type": "stat",
+        "title": "Daily P&L",
+        "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "siqe_daily_pnl",
+            "legendFormat": "Daily P&L",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2,
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": null},
+                {"color": "yellow", "value": -50},
+                {"color": "green", "value": 0}
+              ]
+            }
+          }
+        },
+        "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "textMode": "value"}
+      },
+      {
+        "type": "stat",
+        "title": "Drawdown %",
+        "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "siqe_drawdown_pct",
+            "legendFormat": "Drawdown %",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 2,
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 5},
+                {"color": "red", "value": 10}
+              ]
+            }
+          }
+        },
+        "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "textMode": "value"}
+      },
+      {
+        "type": "timeseries",
+        "title": "Events Processed",
+        "gridPos": {"x": 0, "y": 4, "w": 12, "h": 6},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(siqe_events_processed_total[1m])",
+            "legendFormat": "Events/sec",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(siqe_events_rejected_total[1m])",
+            "legendFormat": "Rejected/sec",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "decimals": 2
+          }
+        },
+        "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}, "drawStyle": "line", "lineInterpolation": "smooth"}
+      },
+      {
+        "type": "timeseries",
+        "title": "Trades Executed",
+        "gridPos": {"x": 12, "y": 4, "w": 12, "h": 6},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(siqe_trades_total[1m])",
+            "legendFormat": "Trades/min",
+            "refId": "A"
+          },
+          {
+            "expr": "siqe_trades_won_total / (siqe_trades_won_total + siqe_trades_lost_total) * 100",
+            "legendFormat": "Win Rate %",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "decimals": 2
+          }
+        },
+        "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}, "drawStyle": "line", "lineInterpolation": "smooth"}
+      },
+      {
+        "type": "timeseries",
+        "title": "Pipeline Latency (ms)",
+        "gridPos": {"x": 0, "y": 10, "w": 24, "h": 8},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.5, sum(rate(siqe_pipeline_stage_latency_seconds_bucket[1m])) by (le, stage))",
+            "legendFormat": "{{stage}} p50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(siqe_pipeline_stage_latency_seconds_bucket[1m])) by (le, stage))",
+            "legendFormat": "{{stage}} p95",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "seconds",
+            "decimals": 3
+          }
+        },
+        "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}, "drawStyle": "line", "lineInterpolation": "smooth"}
+      },
+      {
+        "type": "stat",
+        "title": "Queue Depth",
+        "gridPos": {"x": 0, "y": 18, "w": 6, "h": 4},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "siqe_queue_depth",
+            "legendFormat": "Queue Depth",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "decimals": 0
+          }
+        },
+        "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "textMode": "value"}
+      },
+      {
+        "type": "stat",
+        "title": "Memory Usage (MB)",
+        "gridPos": {"x": 6, "y": 18, "w": 6, "h": 4},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "siqe_memory_mb",
+            "legendFormat": "Memory",
+            "refId": "A"
+          },
+          {
+            "expr": "siqe_peak_memory_mb",
+            "legendFormat": "Peak Memory",
+            "refId": "B"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "bytes",
+            "decimals": 0
+          }
+        },
+        "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "textMode": "value"}
+      },
+      {
+        "type": "stat",
+        "title": "Active Positions",
+        "gridPos": {"x": 12, "y": 18, "w": 6, "h": 4},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "siqe_active_positions",
+            "legendFormat": "Active Positions",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "decimals": 0
+          }
+        },
+        "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "textMode": "value"}
+      },
+      {
+        "type": "stat",
+        "title": "Circuit Breaker Active",
+        "gridPos": {"x": 18, "y": 18, "w": 6, "h": 4},
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "siqe_circuit_breaker_active",
+            "legendFormat": "Circuit Breaker",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "red", "value": 0.5}
+              ]
+            },
+            "mappings": [
+              {"options": {"0": {"text": "Normal"}, "1": {"text": "Tripped"}}, "type": "value"}
+            ]
+          }
+        },
+        "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "textMode": "value"}
+      }
+    ],
+    "templating": {
+      "list": []
+    },
+    "annotations": {
+      "list": []
+    }
+  },
+  "overwrite": true
+}

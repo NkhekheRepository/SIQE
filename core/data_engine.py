@@ -14,6 +14,7 @@ import pandas as pd
 
 from core.clock import EventClock
 from models.trade import MarketEvent, SignalType
+from .ws_streamer import WebSocketStreamer
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class DataEngine:
 
         # Real market data infrastructure
         self._exchange = None
+        self._ws_streamer: Optional[WebSocketStreamer] = None
         self._historical_cache: Dict[str, pd.DataFrame] = {}
         self._last_prices: Dict[str, float] = {}
         self._reconnect_attempts = 0
@@ -39,6 +41,7 @@ class DataEngine:
         self._parquet_path = None
         self._ccxt_exchange_name = "binance"
         self._ccxt_market_type = "swap"
+        self._data_source_mode = "websocket"  # websocket or rest
 
     def set_execution_adapter(self, execution_adapter):
         self.execution_adapter = execution_adapter
@@ -52,10 +55,17 @@ class DataEngine:
             self._parquet_path = self.settings.get("historical_data_path", "data/binance_futures/parquet/")
             self._ccxt_exchange_name = self.settings.get("ccxt_exchange", "binance")
             self._ccxt_market_type = self.settings.get("ccxt_market_type", "swap")
+            self._data_source_mode = self.settings.get("data_source", "websocket")
 
-            # Initialize ccxt exchange for real market data
+            # Initialize ccxt exchange for real market data (REST fallback)
             if self._use_real_data:
                 await self._init_ccxt_exchange()
+                
+                # Initialize WebSocket streamer if in websocket mode
+                if self._data_source_mode == "websocket":
+                    self._ws_streamer = WebSocketStreamer(self.settings, self.clock)
+                    await self._ws_streamer.initialize()
+                    await self._ws_streamer.start_streaming()
 
             # Load historical parquet data for fallback
             await self._load_historical_cache()
@@ -63,7 +73,7 @@ class DataEngine:
             self.is_initialized = True
             symbols = self.settings.get("binance_symbols", ["BTCUSDT", "ETHUSDT", "BNBUSDT"])
             await self.subscribe(symbols)
-            logger.info(f"Data Engine initialized with symbols: {symbols}, real_data={self._use_real_data}")
+            logger.info(f"Data Engine initialized with symbols: {symbols}, real_data={self._use_real_data}, mode={self._data_source_mode}")
             return True
         except Exception as e:
             logger.error(f"Failed to initialize Data Engine: {e}")
@@ -153,8 +163,13 @@ class DataEngine:
             self._event_counter += 1
             seq = self.clock.tick()
 
-            # Priority: 1) Live data from execution adapter bridge, 2) CCXT REST, 3) Parquet fallback
-            if self.execution_adapter and self.execution_adapter.is_initialized and self.execution_adapter.bridge:
+            # Priority: 1) WebSocket streamer data, 2) Live data from execution adapter bridge, 
+            # 3) CCXT REST, 4) Parquet fallback
+            if self._ws_streamer and self._data_source_mode == "websocket":
+                # For now, we'll get data from WebSocket via the execution adapter bridge
+                # In a full implementation, the WebSocket streamer would emit events directly
+                market_data = await self._get_live_market_data(seq)
+            elif self.execution_adapter and self.execution_adapter.is_initialized and self.execution_adapter.bridge:
                 market_data = await self._get_live_market_data(seq)
             elif self._exchange and self._connection_state == "connected":
                 market_data = await self._get_ccxt_market_data(seq)
@@ -180,30 +195,41 @@ class DataEngine:
                 return None
 
     async def _get_live_market_data(self, seq: int) -> Dict[str, MarketEvent]:
-        """Get real market data via execution adapter bridge (VN.PY)."""
+        """Get real market data via execution adapter bridge (VN.PY) or WebSocket streamer."""
         market_data = {}
         symbols = list(self.subscriptions) if self.subscriptions else ["BTCUSDT", "ETHUSDT"]
 
+        # Try WebSocket streamer first if available
+        if self._ws_streamer and self._data_source_mode == "websocket":
+            try:
+                # Get latest data from WebSocket streamer (this would need to be implemented in WS streamer)
+                # For now, fall back to execution adapter
+                pass
+            except Exception as e:
+                logger.warning(f"Failed to get data from WebSocket streamer: {e}")
+
+        # Fall back to execution adapter bridge
         for symbol in symbols:
             try:
-                data = await self.execution_adapter.bridge.get_market_data(symbol)
-                bid = data.get("bid", 0.0)
-                ask = data.get("ask", 0.0)
-                volume = data.get("volume", 0.0)
+                if self.execution_adapter and self.execution_adapter.is_initialized and self.execution_adapter.bridge:
+                    data = await self.execution_adapter.bridge.get_market_data(symbol)
+                    bid = data.get("bid", 0.0)
+                    ask = data.get("ask", 0.0)
+                    volume = data.get("volume", 0.0)
 
-                if bid > 0 and ask > 0:
-                    mid = (bid + ask) / 2
-                    volatility = abs(ask - bid) / mid if mid > 0 else 0.001
-                    market_data[symbol] = MarketEvent(
-                        event_id=f"evt_{symbol.lower()}_{seq}",
-                        symbol=symbol,
-                        bid=round(bid, 8),
-                        ask=round(ask, 8),
-                        volume=round(volume, 8),
-                        volatility=round(volatility, 6),
-                        event_seq=seq,
-                    )
-                    self._last_prices[symbol] = mid
+                    if bid > 0 and ask > 0:
+                        mid = (bid + ask) / 2
+                        volatility = abs(ask - bid) / mid if mid > 0 else 0.001
+                        market_data[symbol] = MarketEvent(
+                            event_id=f"evt_{symbol.lower()}_{seq}",
+                            symbol=symbol,
+                            bid=round(bid, 8),
+                            ask=round(ask, 8),
+                            volume=round(volume, 8),
+                            volatility=round(volatility, 6),
+                            event_seq=seq,
+                        )
+                        self._last_prices[symbol] = mid
             except Exception as e:
                 logger.warning(f"Failed to get live data for {symbol}: {e}")
 
@@ -378,6 +404,13 @@ class DataEngine:
     async def shutdown(self):
         logger.info("Shutting down Data Engine...")
         self.is_initialized = False
+
+        # Shutdown WebSocket streamer first
+        if self._ws_streamer:
+            try:
+                await self._ws_streamer.shutdown()
+            except Exception as e:
+                logger.warning(f"Error shutting down WebSocket streamer: {e}")
 
         if self._exchange:
             try:
