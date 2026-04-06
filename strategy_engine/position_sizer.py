@@ -325,3 +325,168 @@ class MaxLimitSizer:
             )
         
         return position, warnings
+
+
+class PortfolioSizer:
+    """
+    Portfolio-level position sizing with correlation-aware allocation.
+    
+    Combines Kelly, Risk Parity, and correlation matrix to allocate
+    capital across multiple assets while respecting portfolio risk limits.
+    """
+    
+    def __init__(
+        self,
+        max_portfolio_risk: float = 0.02,
+        max_single_position_risk: float = 0.01,
+        kelly_fraction: float = 0.25,
+        target_volatility: float = 0.15,
+    ):
+        self.max_portfolio_risk = max_portfolio_risk
+        self.max_single_position_risk = max_single_position_risk
+        self.kelly_fraction = kelly_fraction
+        self.target_volatility = target_volatility
+        self._kelly = KellySizer(kelly_fraction=kelly_fraction)
+        self._risk_parity = RiskParitySizer(target_volatility=target_volatility)
+        self._max_limit = MaxLimitSizer(max_position_pct=max_single_position_risk * 10)
+    
+    def allocate(
+        self,
+        symbol_returns: Dict[str, pd.Series],
+        portfolio_value: float,
+        prices: Dict[str, float],
+        correlation_matrix: Optional[np.ndarray] = None,
+        symbols: Optional[List[str]] = None,
+    ) -> Dict[str, PositionSize]:
+        """
+        Allocate capital across symbols using correlation-aware risk parity.
+        
+        Args:
+            symbol_returns: Dict of symbol -> return series
+            portfolio_value: Total portfolio value
+            prices: Dict of symbol -> current price
+            correlation_matrix: Pre-computed correlation matrix
+            symbols: List of symbols to allocate
+            
+        Returns:
+            Dict of symbol -> PositionSize
+        """
+        if not symbols:
+            symbols = list(symbol_returns.keys())
+        
+        if len(symbols) == 0:
+            return {}
+        
+        if len(symbols) == 1:
+            sym = symbols[0]
+            returns = symbol_returns.get(sym, pd.Series())
+            price = prices.get(sym, 1.0)
+            return {sym: self._kelly.calculate(returns, portfolio_value, price)}
+        
+        if correlation_matrix is not None and len(symbols) >= 2:
+            return self._correlation_aware_allocation(
+                symbols, symbol_returns, portfolio_value, prices, correlation_matrix
+            )
+        
+        return self._risk_parity_allocation(symbols, symbol_returns, portfolio_value, prices)
+    
+    def _correlation_aware_allocation(
+        self,
+        symbols: List[str],
+        symbol_returns: Dict[str, pd.Series],
+        portfolio_value: float,
+        prices: Dict[str, float],
+        corr_matrix: np.ndarray,
+    ) -> Dict[str, PositionSize]:
+        """Allocate using correlation matrix to diversify risk."""
+        n = len(symbols)
+        vols = np.array([
+            float(symbol_returns.get(s, pd.Series()).std() * np.sqrt(252))
+            for s in symbols
+        ])
+        vols = np.clip(vols, 0.01, 2.0)
+        
+        risk_budget = np.ones(n) / n
+        for _ in range(50):
+            port_vol = np.sqrt(risk_budget @ corr_matrix @ risk_budget)
+            if port_vol == 0:
+                break
+            marginal_risk = corr_matrix @ risk_budget
+            risk_contrib = risk_budget * marginal_risk / port_vol
+            target = np.ones(n) / n
+            adjustment = target / np.clip(risk_contrib, 1e-10, None)
+            risk_budget *= adjustment
+            risk_budget /= risk_budget.sum()
+        
+        results = {}
+        for i, sym in enumerate(symbols):
+            weight = risk_budget[i]
+            returns = symbol_returns.get(sym, pd.Series())
+            price = prices.get(sym, 1.0)
+            
+            dollar_amount = portfolio_value * weight * min(self.max_portfolio_risk * 10, 0.20)
+            dollar_amount = min(dollar_amount, portfolio_value * self.max_single_position_risk)
+            
+            shares = dollar_amount / price if price > 0 else 0.0
+            vol = vols[i]
+            stop_loss = price * (1 - vol * 2)
+            take_profit = price * (1 + vol * 3)
+            risk_per_share = price - stop_loss if stop_loss < price else price * 0.02
+            
+            results[sym] = PositionSize(
+                fraction_of_portfolio=weight,
+                dollar_amount=dollar_amount,
+                shares=shares,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                risk_per_share=risk_per_share,
+                method="risk_parity_corr",
+                confidence=min(1.0, len(returns) / 100.0) if len(returns) > 0 else 0.0,
+                warnings=[],
+            )
+        
+        return results
+    
+    def _risk_parity_allocation(
+        self,
+        symbols: List[str],
+        symbol_returns: Dict[str, pd.Series],
+        portfolio_value: float,
+        prices: Dict[str, float],
+    ) -> Dict[str, PositionSize]:
+        """Equal risk contribution allocation without correlation matrix."""
+        vols = {}
+        for sym in symbols:
+            returns = symbol_returns.get(sym, pd.Series())
+            if len(returns) >= 30:
+                vols[sym] = float(returns.std() * np.sqrt(252))
+            else:
+                vols[sym] = self.target_volatility
+        
+        total_inv_vol = sum(1.0 / v for v in vols.values())
+        results = {}
+        
+        for sym in symbols:
+            weight = (1.0 / vols[sym]) / total_inv_vol
+            price = prices.get(sym, 1.0)
+            dollar_amount = portfolio_value * weight * min(self.max_portfolio_risk * 10, 0.20)
+            dollar_amount = min(dollar_amount, portfolio_value * self.max_single_position_risk)
+            shares = dollar_amount / price if price > 0 else 0.0
+            vol = vols[sym]
+            stop_loss = price * (1 - vol * 2)
+            take_profit = price * (1 + vol * 3)
+            risk_per_share = price - stop_loss if stop_loss < price else price * 0.02
+            
+            results[sym] = PositionSize(
+                fraction_of_portfolio=weight,
+                dollar_amount=dollar_amount,
+                shares=shares,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                risk_per_share=risk_per_share,
+                method="risk_parity",
+                confidence=min(1.0, len(symbol_returns.get(sym, [])) / 100.0),
+                warnings=[],
+            )
+        
+        return results

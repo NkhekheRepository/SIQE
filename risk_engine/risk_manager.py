@@ -3,6 +3,7 @@ Risk Engine Module
 Enforces risk limits and validates trades against risk parameters.
 Deterministic: uses EventClock instead of datetime.now().
 Includes circuit breakers for production safety.
+Phase 3: Added portfolio-level VaR, correlation matrix, Monte Carlo simulation.
 """
 import asyncio
 import logging
@@ -87,6 +88,16 @@ class RiskEngine:
         self._circuit_breaker_history: List[Dict[str, Any]] = []
         self._trade_returns: List[float] = []
         self._max_returns_history = 1000
+
+        # Phase 3: Portfolio-level risk
+        self._symbol_returns: Dict[str, List[float]] = {}
+        self._symbol_positions: Dict[str, Dict[str, float]] = {}
+        self._max_portfolio_risk = self.settings.get("max_portfolio_risk", 0.02)
+        self._max_single_position_risk = self.settings.get("max_single_position_risk", 0.01)
+        self._var_confidence = self.settings.get("var_confidence", 0.95)
+        self._correlation_matrix: Optional[np.ndarray] = None
+        self._correlation_symbols: List[str] = []
+        self._correlation_lookback = 100
 
     async def initialize(self) -> bool:
         try:
@@ -391,4 +402,172 @@ class RiskEngine:
             "emergency_stop_reason": self._emergency_stop_reason,
             "api_failure_count": self._api_failure_count,
             "recent_triggers": self._circuit_breaker_history[-10:],
+        }
+
+    async def update_symbol_return(self, symbol: str, return_pct: float):
+        """Track per-symbol returns for correlation and portfolio VaR."""
+        if symbol not in self._symbol_returns:
+            self._symbol_returns[symbol] = []
+        self._symbol_returns[symbol].append(return_pct)
+        if len(self._symbol_returns[symbol]) > self._correlation_lookback:
+            self._symbol_returns[symbol] = self._symbol_returns[symbol][-self._correlation_lookback:]
+
+    def update_symbol_position(self, symbol: str, notional: float, pnl: float = 0.0):
+        """Track current position per symbol for portfolio risk."""
+        self._symbol_positions[symbol] = {
+            "notional": notional,
+            "pnl": pnl,
+            "timestamp": self.clock.now,
+        }
+
+    def remove_symbol_position(self, symbol: str):
+        """Remove a symbol from tracked positions."""
+        self._symbol_positions.pop(symbol, None)
+
+    def get_portfolio_notional(self) -> float:
+        """Total notional exposure across all positions."""
+        return sum(pos.get("notional", 0.0) for pos in self._symbol_positions.values())
+
+    def get_portfolio_pnl(self) -> float:
+        """Total unrealized PnL across all positions."""
+        return sum(pos.get("pnl", 0.0) for pos in self._symbol_positions.values())
+
+    def compute_correlation_matrix(self) -> Optional[np.ndarray]:
+        """Compute rolling correlation matrix across all tracked symbols."""
+        symbols = sorted(self._symbol_returns.keys())
+        if len(symbols) < 2:
+            return None
+
+        min_len = min(len(self._symbol_returns[s]) for s in symbols)
+        if min_len < 10:
+            return None
+
+        returns_matrix = np.array([self._symbol_returns[s][-min_len:] for s in symbols])
+        if np.std(returns_matrix, axis=1).min() == 0:
+            return None
+
+        corr = np.corrcoef(returns_matrix)
+        corr = np.nan_to_num(corr, nan=0.0)
+        corr = np.clip(corr, -1.0, 1.0)
+        np.fill_diagonal(corr, 1.0)
+
+        self._correlation_matrix = corr
+        self._correlation_symbols = symbols
+        return corr
+
+    def get_correlation_matrix(self) -> Dict[str, Any]:
+        """Return correlation matrix as a serializable dict."""
+        if self._correlation_matrix is None:
+            self.compute_correlation_matrix()
+
+        if self._correlation_matrix is None:
+            return {"error": "Insufficient data for correlation matrix"}
+
+        matrix = self._correlation_matrix.tolist()
+        symbols = self._correlation_symbols
+        return {
+            "symbols": symbols,
+            "matrix": matrix,
+            "lookback": min(len(self._symbol_returns.get(s, [])) for s in symbols) if symbols else 0,
+        }
+
+    def calculate_portfolio_var(self, confidence: float = 0.95, n_simulations: int = 10000) -> Dict[str, Any]:
+        """
+        Calculate portfolio VaR using Monte Carlo simulation.
+
+        Uses the correlation matrix and per-symbol return distributions
+        to simulate portfolio outcomes and estimate VaR/CVaR.
+        """
+        symbols = sorted(self._symbol_returns.keys())
+        if len(symbols) < 2:
+            return self.get_var_status(self._trade_returns)
+
+        min_len = min(len(self._symbol_returns[s]) for s in symbols)
+        if min_len < 10:
+            return {"error": "Insufficient data for portfolio VaR"}
+
+        returns_matrix = np.array([self._symbol_returns[s][-min_len:] for s in symbols])
+        mean_returns = np.mean(returns_matrix, axis=1)
+        std_returns = np.std(returns_matrix, axis=1)
+
+        corr = self.compute_correlation_matrix()
+        if corr is None:
+            return {"error": "Could not compute correlation matrix"}
+
+        cov_matrix = np.outer(std_returns, std_returns) * corr
+
+        try:
+            L = np.linalg.cholesky(cov_matrix)
+        except np.linalg.LinAlgError:
+            corr += np.eye(len(symbols)) * 1e-6
+            cov_matrix = np.outer(std_returns, std_returns) * corr
+            try:
+                L = np.linalg.cholesky(cov_matrix)
+            except np.linalg.LinAlgError:
+                return {"error": "Cholesky decomposition failed"}
+
+        z = np.random.standard_normal((n_simulations, len(symbols)))
+        correlated_z = z @ L.T
+        simulated_returns = mean_returns + correlated_z * std_returns
+
+        portfolio_notional = self.get_portfolio_notional()
+        if portfolio_notional <= 0:
+            portfolio_notional = self.current_equity
+
+        portfolio_pnl_sim = np.sum(simulated_returns, axis=1) * portfolio_notional
+
+        var_pct = np.percentile(portfolio_pnl_sim, (1 - confidence) * 100)
+        cvar_pct = np.mean(portfolio_pnl_sim[portfolio_pnl_sim <= var_pct]) if np.any(portfolio_pnl_sim <= var_pct) else var_pct
+
+        return {
+            "portfolio_var": abs(var_pct),
+            "portfolio_cvar": abs(cvar_pct),
+            "confidence": confidence,
+            "n_simulations": n_simulations,
+            "portfolio_notional": portfolio_notional,
+            "n_symbols": len(symbols),
+            "symbols": symbols,
+            "var_pct_of_equity": abs(var_pct) / self.current_equity if self.current_equity > 0 else 0,
+            "cvar_pct_of_equity": abs(cvar_pct) / self.current_equity if self.current_equity > 0 else 0,
+        }
+
+    def check_portfolio_risk_limits(self) -> Dict[str, Any]:
+        """Check if current portfolio is within risk limits."""
+        portfolio_notional = self.get_portfolio_notional()
+        portfolio_risk_pct = portfolio_notional / self.current_equity if self.current_equity > 0 else 0
+
+        violations = []
+        if portfolio_risk_pct > self._max_portfolio_risk:
+            violations.append(f"Portfolio risk {portfolio_risk_pct:.2%} > max {self._max_portfolio_risk:.2%}")
+
+        for symbol, pos in self._symbol_positions.items():
+            pos_risk = abs(pos.get("notional", 0)) / self.current_equity if self.current_equity > 0 else 0
+            if pos_risk > self._max_single_position_risk:
+                violations.append(f"{symbol} risk {pos_risk:.2%} > max single {self._max_single_position_risk:.2%}")
+
+        return {
+            "portfolio_notional": portfolio_notional,
+            "portfolio_risk_pct": portfolio_risk_pct,
+            "max_portfolio_risk": self._max_portfolio_risk,
+            "max_single_position_risk": self._max_single_position_risk,
+            "n_positions": len(self._symbol_positions),
+            "within_limits": len(violations) == 0,
+            "violations": violations,
+        }
+
+    async def get_portfolio_risk_status(self) -> Dict[str, Any]:
+        """Comprehensive portfolio risk status."""
+        var_status = self.calculate_portfolio_var(confidence=self._var_confidence)
+        corr_status = self.get_correlation_matrix()
+        limits_status = self.check_portfolio_risk_limits()
+        single_var = await self.get_var_status(self._trade_returns)
+
+        return {
+            "portfolio": limits_status,
+            "monte_carlo_var": var_status,
+            "correlation": corr_status,
+            "single_asset_var": single_var,
+            "total_exposure": self.get_portfolio_notional(),
+            "total_pnl": self.get_portfolio_pnl(),
+            "current_equity": self.current_equity,
         }
