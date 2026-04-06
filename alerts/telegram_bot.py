@@ -156,22 +156,35 @@ class TelegramBot:
         return result is not None and result.get("ok", False)
     
     def _get_updates(self) -> List[Dict]:
-        """Get updates from Telegram using short-polling with offset tracking."""
+        """Get updates from Telegram using long-polling."""
         try:
-            result = self._session.get(
+            import requests
+            # Use long polling with 30 second timeout
+            params = {"timeout": 30}
+            logger.info(f"Calling getUpdates with params: {params}")
+            
+            response = requests.get(
                 f"{self._api_url}/getUpdates",
-                params={"offset": self._last_update_id + 1, "timeout": 1},
-                timeout=5,
+                params=params,
+                timeout=35,  # longer than API timeout
             )
-            logger.info(f"getUpdates response status: {result.status_code}")
-            if result.status_code == 200:
-                data = result.json()
+            logger.info(f"getUpdates response status: {response.status_code}")
+            if response.status_code == 200:
+                data = response.json()
                 if data.get("ok"):
                     updates = data.get("result", [])
-                    logger.info(f"Got {len(updates)} updates, last_id={self._last_update_id}")
+                    logger.info(f"Got {len(updates)} raw updates")
+                    if updates:
+                        # Log first update details for debugging
+                        first = updates[0]
+                        msg = first.get("message", {})
+                        logger.info(f"First update: ID={first.get('update_id')}, msg_text={msg.get('text')}, chat_id={msg.get('chat',{}).get('id')}")
+                        logger.info(f"Bot chat_id: {self.chat_id}, type: {type(self.chat_id)}")
                     return updates
                 else:
                     logger.warning(f"getUpdates returned error: {data}")
+            elif response.status_code == 409:
+                logger.error("409 Conflict - another bot is using getUpdates")
         except Exception as e:
             logger.error(f"getUpdates failed: {e}")
         return []
@@ -642,7 +655,7 @@ Use /subscribe <type> to add alerts.
     def start_polling(self) -> None:
         """Start the bot polling loop with optional auto-refresh."""
         self._running = True
-        self._sync_offset()
+        # Skip offset sync - let getUpdates return pending updates naturally
         logger.info("Telegram bot polling started")
         
         last_state_update = 0
