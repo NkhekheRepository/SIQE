@@ -159,35 +159,40 @@ class TelegramBot:
         """Get updates from Telegram using long-polling."""
         try:
             import requests
-            # Use long polling with 30 second timeout
+            import json
+            # Fresh request with proper params
             params = {"timeout": 30}
-            logger.info(f"Calling getUpdates with params: {params}")
+            url = f"{self._api_url}/getUpdates"
+            logger.info(f"getUpdates: calling with timeout=30")
             
-            response = requests.get(
-                f"{self._api_url}/getUpdates",
-                params=params,
-                timeout=35,  # longer than API timeout
-            )
-            logger.info(f"getUpdates response status: {response.status_code}")
+            response = requests.get(url, params=params, timeout=35)
+            logger.info(f"getUpdates: status={response.status_code}")
+            
             if response.status_code == 200:
                 data = response.json()
-                if data.get("ok"):
-                    updates = data.get("result", [])
-                    logger.info(f"Got {len(updates)} raw updates")
-                    if updates:
-                        # Log first update details for debugging
-                        first = updates[0]
-                        msg = first.get("message", {})
-                        logger.info(f"First update: ID={first.get('update_id')}, msg_text={msg.get('text')}, chat_id={msg.get('chat',{}).get('id')}")
-                        logger.info(f"Bot chat_id: {self.chat_id}, type: {type(self.chat_id)}")
-                    return updates
-                else:
-                    logger.warning(f"getUpdates returned error: {data}")
+                if not data.get("ok"):
+                    logger.warning(f"getUpdates API error: {data}")
+                    return []
+                    
+                updates = data.get("result", [])
+                logger.info(f"getUpdates: got {len(updates)} updates")
+                
+                # Log what we got
+                for i, u in enumerate(updates[:2]):  # Log first 2
+                    msg = u.get("message", {})
+                    logger.info(f"  Update[{i}]: id={u.get('update_id')}, chat={msg.get('chat',{}).get('id')}, text={msg.get('text')}")
+                
+                return updates
             elif response.status_code == 409:
-                logger.error("409 Conflict - another bot is using getUpdates")
+                logger.error("409 Conflict - another bot running")
+                return []
+            else:
+                logger.error(f"Unexpected status: {response.status_code}")
+                return []
+                
         except Exception as e:
-            logger.error(f"getUpdates failed: {e}")
-        return []
+            logger.error(f"getUpdates exception: {type(e).__name__}: {e}")
+            return []
     
     def _process_update(self, update: Dict) -> None:
         """Process a single update."""
@@ -655,33 +660,32 @@ Use /subscribe <type> to add alerts.
     def start_polling(self) -> None:
         """Start the bot polling loop with optional auto-refresh."""
         self._running = True
-        # Skip offset sync - let getUpdates return pending updates naturally
-        logger.info("Telegram bot polling started")
+        self._last_update_id = 0  # Reset to get ALL pending updates
+        logger.info("Telegram bot polling started (reset offset)")
         
         last_state_update = 0
         refresh_interval = 30  # seconds
-        
-        logger.info("Polling loop started, _running=True")
         
         while self._running:
             try:
                 current_time = time.time()
                 updates = self._get_updates()
                 if updates:
-                    logger.info(f"Received {len(updates)} updates: {[u.get('update_id') for u in updates]}")
-                for update in updates:
-                    self._process_update(update)
+                    logger.info(f"Processing {len(updates)} updates")
+                    for update in updates:
+                        self._process_update(update)
                 
                 # Auto-refresh dashboard every 30 seconds
                 if current_time - last_state_update >= refresh_interval:
                     last_state_update = current_time
                     self._auto_refresh_dashboard()
                     
+                # Small sleep between polls
+                time.sleep(1)
+                
             except Exception as e:
                 logger.error(f"Error in polling loop: {e}")
                 time.sleep(5)
-            
-            time.sleep(self._poll_interval)
     
     def stop_polling(self) -> None:
         """Stop the bot polling loop."""
