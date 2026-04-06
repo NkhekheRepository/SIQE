@@ -254,6 +254,21 @@ class RegimeEngine:
             logger.error(f"Error calculating risk scaling factor: {e}")
             return 1.0
 
+    async def update_trade_feedback(self, pnl: float):
+        """Update regime engine with trade outcome for adaptive regime detection."""
+        try:
+            self.regime_history.append({
+                "timestamp": self.clock.now,
+                "regime": self.current_regime,
+                "confidence": self.regime_confidence,
+                "trade_pnl": pnl,
+            })
+            if len(self.regime_history) > self.lookback_period:
+                self.regime_history = self.regime_history[-self.lookback_period:]
+            logger.debug(f"Regime engine updated with trade feedback: pnl={pnl:.2f}")
+        except Exception as e:
+            logger.error(f"Error updating trade feedback: {e}")
+
     async def shutdown(self):
         logger.info("Shutting down Regime Engine...")
         self.is_initialized = False

@@ -123,8 +123,8 @@ class FeedbackLoop:
         signal_alpha = trade.ev * notional
         expected_price = trade.price
         execution_alpha = (expected_price - execution_result.filled_price) * execution_result.filled_quantity
-        noise = float(np.random.normal(0, abs(signal_alpha) * 0.1))
-        total_pnl = signal_alpha + execution_alpha + noise
+        total_pnl = signal_alpha + execution_alpha
+        noise = total_pnl - signal_alpha - execution_alpha
 
         return PnLDecomposition(
             execution_id=execution_result.execution_id,
@@ -208,13 +208,32 @@ class FeedbackLoop:
     async def _feed_to_learning_system(self, feedback_data: Dict[str, Any]):
         try:
             if self.learning_engine:
-                logger.debug(f"Feeding to learning system: {feedback_data.get('execution_id')}")
+                strategy = feedback_data.get("strategy", "unknown")
+                perf = {
+                    "total_trades": 1,
+                    "win_rate": 1.0 if feedback_data.get("pnl", 0) > 0 else 0.0,
+                    "avg_pnl": feedback_data.get("pnl", 0),
+                    "avg_ev": feedback_data.get("ev_score", 0),
+                    "sample_size": 1,
+                    "pnl": feedback_data.get("pnl", 0),
+                }
+                await self.learning_engine.update_parameters(strategy, perf)
+                logger.debug(f"Feeding to learning system: {feedback_data.get('execution_id')} strategy={strategy}")
         except Exception as e:
             logger.error(f"Error feeding to learning system: {e}")
 
     async def _feed_to_memory_system(self, feedback_data: Dict[str, Any]):
         try:
             if self.state_manager:
+                trade_record = {
+                    "execution_id": feedback_data.get("execution_id"),
+                    "symbol": feedback_data.get("symbol"),
+                    "pnl": feedback_data.get("pnl", 0),
+                    "strategy": feedback_data.get("strategy", "unknown"),
+                    "timestamp": feedback_data.get("timestamp"),
+                    "trade_type": feedback_data.get("trade_type", "unknown"),
+                }
+                await self.state_manager.save_trade(trade_record)
                 logger.debug(f"Feeding to memory system: {feedback_data.get('execution_id')}")
         except Exception as e:
             logger.error(f"Error feeding to memory system: {e}")
@@ -251,7 +270,9 @@ class FeedbackLoop:
     async def _feed_to_regime_engine(self, feedback_data: Dict[str, Any]):
         try:
             if self.regime_engine:
-                logger.debug(f"Feeding to regime engine: {feedback_data.get('execution_id')}")
+                pnl = feedback_data.get("pnl", 0)
+                await self.regime_engine.update_trade_feedback(pnl)
+                logger.debug(f"Feeding to regime engine: {feedback_data.get('execution_id')} pnl={pnl:.2f}")
         except Exception as e:
             logger.error(f"Error feeding to regime engine: {e}")
 

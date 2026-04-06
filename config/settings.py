@@ -48,6 +48,42 @@ class Settings:
         self.use_mock_execution = os.getenv("USE_MOCK_EXECUTION", "true").lower() == "true"
         self.slippage_model = os.getenv("SLIPPAGE_MODEL", "linear")
         self.latency_tolerance_ms = int(os.getenv("LATENCY_TOLERANCE_MS", "100"))
+
+        # Data source settings (Phase 1)
+        self.use_real_data = os.getenv("USE_REAL_DATA", "false").lower() == "true"
+        self.data_source = os.getenv("DATA_SOURCE", "websocket")
+        self.historical_data_path = os.getenv("HISTORICAL_DATA_PATH", "data/binance_futures/parquet/")
+        self.ccxt_exchange = os.getenv("CCXT_EXCHANGE", "binance")
+        self.ccxt_market_type = os.getenv("CCXT_MARKET_TYPE", "swap")
+
+        # Futures settings (Phase 1)
+        self.futures_api_key = os.getenv("FUTURES_API_KEY", "")
+        self.futures_api_secret = os.getenv("FUTURES_API_SECRET", "")
+        self.futures_leverage = int(os.getenv("FUTURES_LEVERAGE", "35"))
+        self.futures_symbol = os.getenv("FUTURES_SYMBOL", "btcusdt")
+        self.futures_risk_pct = float(os.getenv("FUTURES_RISK_PCT", "0.02"))
+        self.futures_margin_alert_pct = float(os.getenv("FUTURES_MARGIN_ALERT_PCT", "0.70"))
+        self.futures_margin_stop_pct = float(os.getenv("FUTURES_MARGIN_STOP_PCT", "0.90"))
+        self.futures_atr_stop = float(os.getenv("FUTURES_ATR_STOP", "0.5"))
+        self.futures_atr_trailing = float(os.getenv("FUTURES_ATR_TRAILING", "0.75"))
+
+        # Adaptation boundaries (Phase 1)
+        self.position_size_min = float(os.getenv("POSITION_SIZE_MIN", "0.001"))
+        self.position_size_max = float(os.getenv("POSITION_SIZE_MAX", "0.08"))
+        self.risk_per_trade_min = float(os.getenv("RISK_PER_TRADE_MIN", "0.005"))
+        self.risk_per_trade_max = float(os.getenv("RISK_PER_TRADE_MAX", "0.03"))
+        self.notional_max = float(os.getenv("NOTIONAL_MAX", "50000"))
+        self.stop_loss_min_atr = float(os.getenv("STOP_LOSS_MIN_ATR", "0.75"))
+        self.stop_loss_max_atr = float(os.getenv("STOP_LOSS_MAX_ATR", "2.5"))
+        self.stop_loss_default_atr = float(os.getenv("STOP_LOSS_DEFAULT_ATR", "1.0"))
+        self.take_profit_min_atr = float(os.getenv("TAKE_PROFIT_MIN_ATR", "1.5"))
+        self.take_profit_max_atr = float(os.getenv("TAKE_PROFIT_MAX_ATR", "5.0"))
+        self.take_profit_default_atr = float(os.getenv("TAKE_PROFIT_DEFAULT_ATR", "2.0"))
+        self.learning_interval_min = int(os.getenv("LEARNING_INTERVAL_MIN", "5"))
+        self.learning_interval_max = int(os.getenv("LEARNING_INTERVAL_MAX", "75"))
+        self.learning_interval_default = int(os.getenv("LEARNING_INTERVAL_DEFAULT", "15"))
+        self.rollback_threshold = int(os.getenv("ROLLBACK_THRESHOLD", "3"))
+        self.rollback_cooldown = int(os.getenv("ROLLBACK_COOLDOWN", "300"))
         
         # VN.PY settings
         self.vnpy_gateway = os.getenv("VNPY_GATEWAY", "BINANCE")
