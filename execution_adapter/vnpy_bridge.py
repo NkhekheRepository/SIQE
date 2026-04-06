@@ -116,6 +116,13 @@ class ExecutionAdapter:
         try:
             execution_id = f"exec_{self.clock.tick()}"
 
+            # Calculate ATR-based SL/TP before entry
+            sl_price, tp_price = await self._calculate_sl_tp(
+                symbol=decision.symbol,
+                entry_price=decision.price,
+                signal_type=decision.signal_type.value,
+            )
+
             result = await self._execute_with_retry(
                 symbol=decision.symbol,
                 order_type=decision.signal_type.value,
@@ -125,16 +132,32 @@ class ExecutionAdapter:
             )
 
             if result.get("success"):
+                filled_price = result.get("filled_price", decision.price)
+                filled_quantity = result.get("filled_quantity", 0)
+
+                # Place SL/TP orders if real bridge supports it
+                if filled_quantity > 0 and sl_price > 0 and tp_price > 0:
+                    await self._place_sl_tp_orders(
+                        symbol=decision.symbol,
+                        signal_type=decision.signal_type.value,
+                        entry_price=filled_price,
+                        quantity=filled_quantity,
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                    )
+
                 trade_record = {
                     "execution_id": execution_id,
                     "symbol": decision.symbol,
                     "signal_type": decision.signal_type.value,
-                    "price": result.get("filled_price", decision.price),
-                    "quantity": result.get("filled_quantity", 0),
+                    "price": filled_price,
+                    "quantity": filled_quantity,
                     "timestamp": self.clock.now,
                     "strategy": decision.strategy,
                     "ev_score": decision.ev_score,
                     "status": result.get("status", "FILLED"),
+                    "stop_loss": sl_price,
+                    "take_profit": tp_price,
                 }
 
                 self.executed_trades.append(trade_record)
@@ -148,8 +171,8 @@ class ExecutionAdapter:
                     trade_id="",
                     symbol=decision.symbol,
                     signal_type=decision.signal_type,
-                    filled_price=result.get("filled_price", decision.price),
-                    filled_quantity=result.get("filled_quantity", 0),
+                    filled_price=filled_price,
+                    filled_quantity=filled_quantity,
                     status=status,
                     event_seq=decision.event_seq,
                     strategy=decision.strategy,
@@ -183,6 +206,53 @@ class ExecutionAdapter:
                 event_seq=decision.event_seq,
                 error=f"Execution error: {str(e)}",
             )
+
+    async def _calculate_sl_tp(self, symbol: str, entry_price: float, signal_type: str) -> tuple:
+        """Calculate ATR-based stop-loss and take-profit prices."""
+        try:
+            sl_multiplier = self.settings.get("stop_loss_default_atr", 1.0)
+            tp_multiplier = self.settings.get("take_profit_default_atr", 2.0)
+
+            # Get ATR from data engine if available
+            atr = None
+            if self.execution_adapter and hasattr(self.execution_adapter, 'data_engine'):
+                atr = await self.execution_adapter.data_engine.get_atr(symbol, period=14)
+
+            if atr is None or atr <= 0:
+                # Fallback: use 0.5% of entry price as ATR proxy
+                atr = entry_price * 0.005
+
+            sl_distance = atr * sl_multiplier
+            tp_distance = atr * tp_multiplier
+
+            if signal_type in ("long", "buy"):
+                sl_price = round(entry_price - sl_distance, 2)
+                tp_price = round(entry_price + tp_distance, 2)
+            else:
+                sl_price = round(entry_price + sl_distance, 2)
+                tp_price = round(entry_price - tp_distance, 2)
+
+            logger.info(f"SL/TP for {symbol}: entry={entry_price:.2f}, SL={sl_price:.2f} ({sl_distance:.2f}), TP={tp_price:.2f} ({tp_distance:.2f}), ATR={atr:.2f}")
+            return sl_price, tp_price
+        except Exception as e:
+            logger.error(f"Error calculating SL/TP: {e}")
+            return 0.0, 0.0
+
+    async def _place_sl_tp_orders(self, symbol: str, signal_type: str, entry_price: float,
+                                   quantity: float, sl_price: float, tp_price: float):
+        """Place stop-loss and take-profit orders after entry fill."""
+        try:
+            if isinstance(self.bridge, MockVNpyBridge):
+                logger.info(f"[MOCK] SL/TP placed for {symbol}: SL={sl_price:.2f}, TP={tp_price:.2f}")
+                return
+
+            if isinstance(self.bridge, VNpyBridge):
+                exit_direction = "SHORT" if signal_type in ("long", "buy") else "LONG"
+                logger.info(f"Placing SL/TP for {symbol}: SL={sl_price:.2f}, TP={tp_price:.2f}, qty={quantity:.6f}")
+                await self.bridge.place_exit_order(symbol, exit_direction, sl_price, quantity, order_type="STOP")
+                await self.bridge.place_exit_order(symbol, exit_direction, tp_price, quantity, order_type="LIMIT")
+        except Exception as e:
+            logger.error(f"Error placing SL/TP orders: {e}")
 
     async def _execute_with_retry(self, symbol: str, order_type: str, price: float,
                                    strength: float, execution_id: str) -> Dict[str, Any]:
@@ -598,6 +668,50 @@ class VNpyBridge:
             "volume": volume,
             "timestamp": self.clock.now,
         }
+
+    async def place_exit_order(self, symbol: str, direction: str, price: float,
+                                quantity: float, order_type: str = "LIMIT") -> Dict[str, Any]:
+        """Place stop-loss or take-profit exit order."""
+        try:
+            from vnpy.trader.object import OrderRequest
+            from vnpy.trader.constant import Direction, Offset, OrderType, Exchange
+
+            exchange_map = {
+                "BINANCE": Exchange.GLOBAL,
+                "CTP": Exchange.SHFE,
+            }
+            exchange = exchange_map.get(self.gateway_name.upper(), Exchange.GLOBAL)
+            binance_symbol = symbol.lower() if self.gateway_name.upper() == "BINANCE" else symbol
+
+            direction_map = {
+                "LONG": Direction.LONG,
+                "SHORT": Direction.SHORT,
+            }
+            dir_enum = direction_map.get(direction.upper(), Direction.SHORT)
+
+            order_type_map = {
+                "STOP": OrderType.STOP,
+                "LIMIT": OrderType.LIMIT,
+                "MARKET": OrderType.MARKET,
+            }
+            type_enum = order_type_map.get(order_type.upper(), OrderType.LIMIT)
+
+            order_req = OrderRequest(
+                symbol=binance_symbol,
+                exchange=exchange,
+                direction=dir_enum,
+                offset=Offset.CLOSE,
+                type=type_enum,
+                price=price,
+                volume=quantity,
+            )
+
+            vt_orderid = self.main_engine.send_order(order_req, self.gateway_name)
+            logger.info(f"Exit order placed: {order_type} {direction} {quantity:.6f} {symbol} @ {price:.2f} -> {vt_orderid}")
+            return {"success": True, "order_id": vt_orderid, "price": price, "quantity": quantity}
+        except Exception as e:
+            logger.error(f"Error placing exit order: {e}")
+            return {"success": False, "error": str(e)}
 
     async def shutdown(self):
         logger.info("Shutting down VN.PY Bridge...")
