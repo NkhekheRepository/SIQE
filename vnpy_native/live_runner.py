@@ -556,6 +556,17 @@ class SiqeLiveRunner:
                     
                     import time
                     self._trading_state.uptime_seconds = int(time.time() - getattr(self, '_start_time', time.time()))
+                    
+                    # MetaHarness system wrapper state
+                    self._trading_state.system_state = "NORMAL" if self._trading_state.is_trading_active else "HALTED"
+                    self._trading_state.override_active = not self._trading_state.is_trading_active
+                    self._trading_state.override_reason = "" if self._trading_state.is_trading_active else "Manual stop"
+                    self._trading_state.recent_pnls_count = 0
+                    self._trading_state.kill_conditions = {
+                        "max_drawdown": 0.20,
+                        "max_consecutive_losses": 5,
+                        "pnl_deviation_threshold": 3.0,
+                    }
                 
                     return self._trading_state
             

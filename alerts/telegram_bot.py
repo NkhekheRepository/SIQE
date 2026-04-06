@@ -1,7 +1,7 @@
 """
 SIQE V3 - Interactive Telegram Bot
 
-Long-polling bot with command handling, inline keyboards, and callback processing.
+Short-polling bot with command handling, inline keyboards, and callback processing.
 """
 import logging
 import threading
@@ -75,6 +75,7 @@ class TelegramBot:
             "/trades": self._handle_trades,
             "/regime": self._handle_regime,
             "/params": self._handle_params,
+            "/system": self._handle_system,
             "/subscribe": self._handle_subscribe,
             "/unsubscribe": self._handle_unsubscribe,
             "/subscriptions": self._handle_subscriptions,
@@ -156,42 +157,28 @@ class TelegramBot:
         return result is not None and result.get("ok", False)
     
     def _get_updates(self) -> List[Dict]:
-        """Get updates from Telegram using long-polling."""
+        """Get updates using short polling with offset tracking."""
         try:
             import requests
-            import json
-            # Fresh request with proper params
-            params = {"timeout": 30}
+            params = {"timeout": 0, "offset": self._last_update_id + 1}
             url = f"{self._api_url}/getUpdates"
-            logger.info(f"getUpdates: calling with timeout=30")
             
-            response = requests.get(url, params=params, timeout=35)
+            response = requests.get(url, params=params, timeout=10)
             logger.info(f"getUpdates: status={response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
                 if not data.get("ok"):
-                    logger.warning(f"getUpdates API error: {data}")
                     return []
-                    
                 updates = data.get("result", [])
                 logger.info(f"getUpdates: got {len(updates)} updates")
-                
-                # Log what we got
-                for i, u in enumerate(updates[:2]):  # Log first 2
-                    msg = u.get("message", {})
-                    logger.info(f"  Update[{i}]: id={u.get('update_id')}, chat={msg.get('chat',{}).get('id')}, text={msg.get('text')}")
-                
                 return updates
             elif response.status_code == 409:
-                logger.error("409 Conflict - another bot running")
+                logger.error("409 Conflict")
                 return []
-            else:
-                logger.error(f"Unexpected status: {response.status_code}")
-                return []
-                
+            return []
         except Exception as e:
-            logger.error(f"getUpdates exception: {type(e).__name__}: {e}")
+            logger.error(f"getUpdates error: {e}")
             return []
     
     def _process_update(self, update: Dict) -> None:
@@ -379,6 +366,14 @@ class TelegramBot:
             reply_markup=Keyboards.back_to_dashboard(),
         )
     
+    def _handle_system(self, message: Dict, args: List[str]) -> None:
+        """Handle /system command - MetaHarness wrapper view."""
+        state = self.state_provider()
+        self.send_message(
+            DashboardFormatter.format_meta_view(state),
+            reply_markup=Keyboards.back_to_dashboard(),
+        )
+    
     def _handle_subscribe(self, message: Dict, args: List[str]) -> None:
         """Handle /subscribe command."""
         if not args:
@@ -470,6 +465,7 @@ Use /subscribe <type> to add alerts.
             "signal_history": self._handle_signal_history,
             "status": self._handle_status,
             "params": self._handle_params,
+            "system": self._handle_system,
             "regime": self._handle_regime,
             "trades": self._handle_trades,
             "help": self._handle_help,
@@ -656,15 +652,15 @@ Use /subscribe <type> to add alerts.
     @_last_dashboard_message_ids.setter
     def _last_dashboard_message_ids(self, value):
         self._dashboard_msg_ids = value
-
+    
     def start_polling(self) -> None:
-        """Start the bot polling loop with optional auto-refresh."""
+        """Start the bot polling loop - use sync polling."""
         self._running = True
-        self._last_update_id = 0  # Reset to get ALL pending updates
-        logger.info("Telegram bot polling started (reset offset)")
+        self._last_update_id = 0
+        logger.info("Telegram bot polling started (sync)")
         
-        last_state_update = 0
-        refresh_interval = 30  # seconds
+        last_state_update = time.time()
+        refresh_interval = 30
         
         while self._running:
             try:
@@ -675,16 +671,14 @@ Use /subscribe <type> to add alerts.
                     for update in updates:
                         self._process_update(update)
                 
-                # Auto-refresh dashboard every 30 seconds
                 if current_time - last_state_update >= refresh_interval:
                     last_state_update = current_time
                     self._auto_refresh_dashboard()
-                    
-                # Small sleep between polls
+                
                 time.sleep(1)
                 
             except Exception as e:
-                logger.error(f"Error in polling loop: {e}")
+                logger.error(f"Error in polling: {e}")
                 time.sleep(5)
     
     def stop_polling(self) -> None:

@@ -64,8 +64,9 @@ class Keyboards:
             .row() \
             .button("📉 Signals", "view:signals") \
             .button("🏷️ Regime", "view:regime") \
-            .button("📋 Trades", "view:trades") \
+            .button("🔧 System", "view:system") \
             .row() \
+            .button("📋 Trades", "view:trades") \
             .button("⏹️ STOP", "action:stop") \
             .button("▶️ START", "action:start") \
             .button("🔄 REFRESH", "action:refresh") \
@@ -93,6 +94,7 @@ class Keyboards:
             .button("📋 Trades", "view:trades") \
             .button("🏷️ Regime", "view:regime") \
             .button("⚙️ Params", "view:params") \
+            .button("🔧 System", "view:system") \
             .build()
     
     @staticmethod

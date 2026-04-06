@@ -80,11 +80,20 @@ class TradingState:
     signal_mean_reversion: float = 0.0
     signal_volatility_breakout: float = 0.0
     
+    # MetaHarness (system wrapper) fields
+    system_state: str = "INITIALIZING"
+    override_active: bool = False
+    override_reason: str = ""
+    recent_pnls_count: int = 0
+    kill_conditions: Dict[str, Any] = None
+    
     def __post_init__(self):
         if self.recent_trades is None:
             self.recent_trades = []
         if self.recent_signals is None:
             self.recent_signals = []
+        if self.kill_conditions is None:
+            self.kill_conditions = {}
 
 
 class DashboardFormatter:
@@ -99,6 +108,10 @@ class DashboardFormatter:
     @staticmethod
     def format_dashboard(state: TradingState) -> str:
         """Format main dashboard view."""
+        # System health indicator
+        system_emoji = "🟢" if state.system_state == "NORMAL" else "🟡" if state.system_state == "DEGRADED" else "🔴"
+        override_indicator = " ⚠️" if state.override_active else ""
+        
         header = DashboardFormatter.format_header(
             mode="PAPER" if state.mode == "PAPER" else "LIVE",
             symbol=state.symbol
@@ -116,10 +129,16 @@ class DashboardFormatter:
         week_emoji = "🟢" if state.weekly_pnl >= 0 else "🔴"
         week_sign = "+" if state.weekly_pnl >= 0 else ""
         
+        net_emoji = "🟢" if (state.unrealized_pnl + state.realized_pnl) >= 0 else "🔴"
+        net_sign = "+" if (state.unrealized_pnl + state.realized_pnl) >= 0 else ""
+        
+        realized_emoji = "🟢" if state.realized_pnl >= 0 else "🔴"
+        realized_sign = "+" if state.realized_pnl >= 0 else ""
+        
         active_emoji = "▶️" if state.is_trading_active else "⏹️"
         
         lines = [
-            f"<b>{header}</b>",
+            f"<b>{header}</b> {system_emoji}{override_indicator}",
             "─" * 40,
             f"<b>Regime:</b> {regime_emoji} {state.regime} ({state.regime_confidence:.0%})",
             f"<b>Signal:</b> {signal_emoji} {state.signal_direction} ({state.signal_strength:.2f})",
@@ -128,19 +147,19 @@ class DashboardFormatter:
             "─" * 40,
             f"<b>Balance:</b> ${state.account_balance:,.2f} (Avail: ${state.available_balance:,.2f})",
             f"<b>Unrealized:</b> {unreal_emoji} {unreal_sign}${state.unrealized_pnl:.2f}",
-            f"<b>Realized:</b> {pnl_sign}${state.realized_pnl:.2f}",
-            f"<b>Net P&L:</b> {unreal_emoji} {unreal_sign}${state.unrealized_pnl + state.realized_pnl:.2f}",
+            f"<b>Realized:</b> {realized_emoji} {realized_sign}${state.realized_pnl:.2f}",
+            f"<b>Net P&L:</b> {net_emoji} {net_sign}${state.unrealized_pnl + state.realized_pnl:.2f}",
             "─" * 40,
-            f"<b>Today:</b> {pnl_emoji} {pnl_sign}${state.daily_pnl:.2f} ({pnl_sign}{state.daily_pnl_pct:.2%})",
+            f"<b>Today:</b> {pnl_emoji} {pnl_sign}${state.daily_pnl:.2f} ({pnl_sign}{state.daily_pnl_pct:.2%}) [{state.winning_trades}W/{state.losing_trades}L]",
             f"<b>This Week:</b> {week_emoji} {week_sign}${state.weekly_pnl:.2f} ({week_sign}{state.weekly_pnl_pct:.2%})",
-            f"<b>All Time:</b> {pnl_sign}${state.total_pnl:.2f} ({pnl_sign}{state.total_pnl_pct:.2%})",
+            f"<b>All Time:</b> {pnl_sign}${state.total_pnl:.2f} ({pnl_sign}{state.total_pnl_pct:.2%}) [{state.total_trades} trades]",
         ]
         
         return "\n".join(lines)
     
     @staticmethod
     def format_quant_view(state: TradingState) -> str:
-        """Format Quant Developer view."""
+        """Format Principal Quant Developer view."""
         regime_emoji = "🟢" if state.regime == "BULL" else "🔴" if state.regime == "BEAR" else "🟡"
         signal_emoji = "⬆️" if state.signal_direction == "LONG" else "⬇️" if state.signal_direction == "SHORT" else "➡️"
         
@@ -151,7 +170,7 @@ class DashboardFormatter:
             last_trade = state.last_trade_time.strftime("%H:%M UTC")
         
         lines = [
-            "📊 QUANT DEVELOPER VIEW",
+            "📊 PRINCIPLE QUANT DEVELOPER VIEW",
             "═" * 40,
             f"<b>Mode:</b> {state.mode}",
             f"<b>Status:</b> {active_emoji} {'ACTIVE' if state.is_trading_active else 'STOPPED'}",
@@ -182,7 +201,7 @@ class DashboardFormatter:
     
     @staticmethod
     def format_hedge_fund_view(state: TradingState) -> str:
-        """Format Hedge Fund Manager view."""
+        """Format Senior Hedge Fund Manager view."""
         daily_emoji = "🟢" if state.daily_pnl >= 0 else "🔴"
         total_emoji = "🟢" if (state.unrealized_pnl + state.realized_pnl) >= 0 else "🔴"
         unreal_emoji = "🟢" if state.unrealized_pnl >= 0 else "🔴"
@@ -196,7 +215,7 @@ class DashboardFormatter:
         net_pnl = state.unrealized_pnl + state.realized_pnl
         
         lines = [
-            "💰 HEDGE FUND MANAGER VIEW",
+            "💰 SENIOR HEDGE FUND MANAGER VIEW",
             "═" * 40,
             f"<b>Account Balance:</b> ${state.account_balance:,.2f}",
             "─" * 40,
@@ -278,7 +297,7 @@ class DashboardFormatter:
     def format_params(state: TradingState) -> str:
         """Format strategy parameters."""
         lines = [
-            "⚙️ Strategy Parameters",
+            "⚙️ PRINCIPLE SOFTWARE ARCHITECT VIEW",
             "═" * 40,
             f"<b>Stop Multiplier:</b> {state.stop_multiplier}x ATR",
             f"<b>Take Profit:</b> {state.tp_multiplier}x ATR",
@@ -288,6 +307,41 @@ class DashboardFormatter:
             f"<b>Regime:</b> {state.regime}",
             f"<b>Confidence Threshold:</b> 80%",
         ]
+        
+        return "\n".join(lines)
+    
+    @staticmethod
+    def format_meta_view(state: TradingState) -> str:
+        """Format MetaHarness system wrapper view for PRINCIPLE SOFTWARE ARCHITECT."""
+        state_emoji = "🟢" if state.system_state == "NORMAL" else "🟡" if state.system_state == "DEGRADED" else "🔴"
+        override_emoji = "⚠️" if state.override_active else "✅"
+        
+        lines = [
+            "🔧 PRINCIPLE SOFTWARE ARCHITECT VIEW",
+            "═" * 40,
+            f"<b>System State:</b> {state_emoji} {state.system_state}",
+            f"<b>Override Active:</b> {override_emoji} {'YES' if state.override_active else 'NO'}",
+        ]
+        
+        if state.override_active and state.override_reason:
+            lines.append(f"<b>Reason:</b> {state.override_reason}")
+        
+        lines.extend([
+            "─" * 40,
+            f"<b>Recent P&Ls:</b> {state.recent_pnls_count} stored",
+            "─" * 40,
+            "<b>Kill Conditions:</b>",
+        ])
+        
+        if state.kill_conditions:
+            for key, value in state.kill_conditions.items():
+                key_display = key.replace("_", " ").title()
+                if isinstance(value, float):
+                    lines.append(f"  {key_display}: {value:.2%}")
+                else:
+                    lines.append(f"  {key_display}: {value}")
+        else:
+            lines.append("  No kill conditions configured")
         
         return "\n".join(lines)
     
@@ -341,14 +395,15 @@ Your quantitative trading assistant is ready.
         """Format help message."""
         return """📖 <b>SIQE V3 Command Reference</b>
 
-<b>🏛️ Five Perspectives:</b>
-┌─────────────────────────────────────┐
-│ /status    → Quant Developer       │
-│ /pnl       → Hedge Fund Manager    │
-│ /signals   → AI/ML Engineer        │
-│ /dashboard → UX Designer           │
-│ /params    → Software Architect    │
-└─────────────────────────────────────┘
+ <b>🏛️ Five Perspectives:</b>
+ ┌─────────────────────────────────────┐
+ │ /status    → PRINCIPLE QUANT DEVELOPER    │
+ │ /pnl       → SENIOR HEDGE FUND MANAGER    │
+ │ /signals   → AI/ML ENGINEER               │
+ │ /dashboard → UX Designer                  │
+ │ /params    → PRINCIPLE SOFTWARE ARCHITECT │
+ │ /system    → META HARNESS (Wrapper)        │
+ └─────────────────────────────────────┘
 
 <b>📊 Views (All Perspectives):</b>
 /dashboard      - Main control panel
@@ -360,6 +415,7 @@ Your quantitative trading assistant is ready.
 /trades         - Recent trades
 /regime         - Market regime detection
 /params         - Strategy parameters
+/system         - MetaHarness wrapper (system state, kill conditions)
 
 <b>⚡ Actions:</b>
 /stop           - Emergency stop trading
