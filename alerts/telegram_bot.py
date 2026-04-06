@@ -44,8 +44,14 @@ class TelegramBot:
         self._api_url = f"https://api.telegram.org/bot{bot_token}"
         self._last_update_id = 0
         self._running = False
-        self._poll_interval = 1.0
+        self._poll_interval = 0.5
         self._session = requests.Session()
+        self._session.headers.update({"User-Agent": "SIQE-Bot/1.0"})
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retry)
+        self._session.mount("https://", adapter)
         
         # State tracking
         self._is_trading_active = True
@@ -92,12 +98,14 @@ class TelegramBot:
             response = self._session.post(
                 f"{self._api_url}/{method}",
                 json=data,
-                timeout=10,
+                timeout=15,
             )
             if response.status_code == 200:
                 return response.json()
             else:
                 logger.warning(f"Telegram API error: {response.status_code} - {response.text}")
+        except requests.exceptions.Timeout:
+            logger.debug(f"Telegram API timeout on {method}")
         except Exception as e:
             logger.error(f"Telegram API request failed: {e}")
         return None
@@ -143,14 +151,22 @@ class TelegramBot:
         return result is not None and result.get("ok", False)
     
     def _get_updates(self) -> List[Dict]:
-        """Get updates from Telegram."""
-        data = {
-            "offset": self._last_update_id + 1,
-            "timeout": 30,
-        }
-        result = self._make_request("getUpdates", data)
-        if result and result.get("ok"):
-            return result.get("result", [])
+        """Get updates from Telegram using short-polling with offset tracking."""
+        try:
+            result = self._session.get(
+                f"{self._api_url}/getUpdates",
+                params={"offset": self._last_update_id + 1, "timeout": 1},
+                timeout=5,
+            )
+            if result.status_code == 200:
+                data = result.json()
+                if data.get("ok"):
+                    updates = data.get("result", [])
+                    if updates:
+                        logger.info(f"Got {len(updates)} updates: {[u.get('update_id') for u in updates]}")
+                    return updates
+        except Exception as e:
+            logger.error(f"getUpdates failed: {e}")
         return []
     
     def _process_update(self, update: Dict) -> None:
@@ -159,17 +175,24 @@ class TelegramBot:
         if update_id is not None:
             self._last_update_id = update_id
         
+        logger.info(f"Processing update {update_id}: {list(update.keys())}")
+        
         # Check if it's a callback query
         if "callback_query" in update:
+            logger.info("Callback query detected")
             self._process_callback_query(update["callback_query"])
             return
         
         # Check if it's a message
         if "message" in update:
             message = update["message"]
+            chat_id = message.get("chat", {}).get("id")
+            if chat_id is None:
+                return
             
-            # Only process messages from the configured chat
-            if str(message.get("chat", {}).get("id")) != self.chat_id:
+            # Convert both to strings for comparison
+            if str(chat_id) != str(self.chat_id):
+                logger.warning(f"Ignoring message from {chat_id} (expected {self.chat_id})")
                 return
             
             # Check if it has text
@@ -177,6 +200,7 @@ class TelegramBot:
             if not text:
                 return
             
+            logger.info(f"Processing command: {text}")
             # Process commands
             if text.startswith("/"):
                 self._process_command(text, message)
@@ -528,6 +552,8 @@ Use /subscribe <type> to add alerts.
         while self._running:
             try:
                 updates = self._get_updates()
+                if updates:
+                    logger.info(f"Received {len(updates)} updates")
                 for update in updates:
                     self._process_update(update)
             except Exception as e:
