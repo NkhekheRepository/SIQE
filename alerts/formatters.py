@@ -110,6 +110,9 @@ class DashboardFormatter:
         pnl_emoji = "🟢" if state.daily_pnl >= 0 else "🔴"
         pnl_sign = "+" if state.daily_pnl >= 0 else ""
         
+        unreal_emoji = "🟢" if state.unrealized_pnl >= 0 else "🔴"
+        unreal_sign = "+" if state.unrealized_pnl >= 0 else ""
+        
         week_emoji = "🟢" if state.weekly_pnl >= 0 else "🔴"
         week_sign = "+" if state.weekly_pnl >= 0 else ""
         
@@ -124,9 +127,9 @@ class DashboardFormatter:
             f"<b>Status:</b> {active_emoji} {'Trading' if state.is_trading_active else 'Stopped'} | Next: {state.next_check_seconds}s",
             "─" * 40,
             f"<b>Balance:</b> ${state.account_balance:,.2f} (Avail: ${state.available_balance:,.2f})",
-            f"<b>Unrealized:</b> {pnl_emoji} {pnl_sign}${state.unrealized_pnl:.2f}",
+            f"<b>Unrealized:</b> {unreal_emoji} {unreal_sign}${state.unrealized_pnl:.2f}",
             f"<b>Realized:</b> {pnl_sign}${state.realized_pnl:.2f}",
-            f"<b>Net P&L:</b> {pnl_emoji} {pnl_sign}${state.unrealized_pnl + state.realized_pnl:.2f}",
+            f"<b>Net P&L:</b> {unreal_emoji} {unreal_sign}${state.unrealized_pnl + state.realized_pnl:.2f}",
             "─" * 40,
             f"<b>Today:</b> {pnl_emoji} {pnl_sign}${state.daily_pnl:.2f} ({pnl_sign}{state.daily_pnl_pct:.2%})",
             f"<b>This Week:</b> {week_emoji} {week_sign}${state.weekly_pnl:.2f} ({week_sign}{state.weekly_pnl_pct:.2%})",
