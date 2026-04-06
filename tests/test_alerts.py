@@ -480,3 +480,603 @@ class TestIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestFormatters:
+    """Test message formatters for all three perspectives."""
+    
+    def test_dashboard_formatter_format_header(self):
+        """Header should include mode and symbol."""
+        from alerts.formatters import DashboardFormatter
+        
+        header = DashboardFormatter.format_header(mode="PAPER", symbol="BTCUSDT")
+        assert "PAPER" in header
+        assert "BTCUSDT" in header
+    
+    def test_dashboard_formatter_format_welcome(self):
+        """Welcome message should contain key commands."""
+        from alerts.formatters import DashboardFormatter
+        
+        msg = DashboardFormatter.format_welcome()
+        assert "/dashboard" in msg
+        assert "/help" in msg
+        assert "/stop" in msg
+    
+    def test_dashboard_formatter_format_help(self):
+        """Help message should contain all commands."""
+        from alerts.formatters import DashboardFormatter
+        
+        msg = DashboardFormatter.format_help()
+        assert "/dashboard" in msg
+        assert "/status" in msg
+        assert "/pnl" in msg
+        assert "/signals" in msg
+        assert "/subscribe" in msg
+        assert "/stop" in msg
+    
+    def test_format_quant_view(self):
+        """Quant view should include regime, signal, params."""
+        from alerts.formatters import DashboardFormatter, TradingState
+        
+        state = TradingState(
+            regime="BULL",
+            regime_confidence=0.85,
+            signal_direction="LONG",
+            signal_strength=0.72,
+        )
+        
+        msg = DashboardFormatter.format_quant_view(state)
+        assert "BULL" in msg
+        assert "LONG" in msg
+        assert "0.72" in msg
+    
+    def test_format_hedge_fund_view(self):
+        """Hedge fund view should include P&L, win rate, drawdown."""
+        from alerts.formatters import DashboardFormatter, TradingState
+        
+        state = TradingState(
+            daily_pnl=12.50,
+            daily_pnl_pct=0.0025,
+            weekly_pnl=-45.20,
+            weekly_pnl_pct=-0.0091,
+            total_pnl=352.14,
+            total_pnl_pct=0.0704,
+            max_drawdown=0.021,
+            win_rate=0.58,
+            total_trades=12,
+            winning_trades=7,
+            losing_trades=5,
+        )
+        
+        msg = DashboardFormatter.format_hedge_fund_view(state)
+        assert "12.50" in msg
+        assert "58.0%" in msg
+        assert "2.10%" in msg
+    
+    def test_format_ml_engineer_view(self):
+        """ML engineer view should include signal strength per strategy."""
+        from alerts.formatters import DashboardFormatter, TradingState
+        
+        state = TradingState(
+            regime="MIXED",
+            regime_confidence=0.87,
+            signal_direction="SHORT",
+            signal_strength=0.68,
+            signal_momentum=0.72,
+            signal_mean_reversion=0.15,
+            signal_volatility_breakout=0.31,
+        )
+        
+        msg = DashboardFormatter.format_ml_engineer_view(state)
+        assert "MIXED" in msg
+        assert "SHORT" in msg
+        assert "momentum" in msg
+        assert "mean_reversion" in msg
+        assert "volatility_breakout" in msg
+    
+    def test_format_positions_no_position(self):
+        """Should show no positions message."""
+        from alerts.formatters import DashboardFormatter, TradingState
+        
+        state = TradingState(position_side="NONE", position_size=0)
+        msg = DashboardFormatter.format_positions(state)
+        assert "No Open Positions" in msg
+    
+    def test_format_positions_with_position(self):
+        """Should show position details."""
+        from alerts.formatters import DashboardFormatter, TradingState
+        
+        state = TradingState(
+            position_side="LONG",
+            position_size=0.01,
+            entry_price=50000.0,
+            unrealized_pnl=125.0,
+        )
+        
+        msg = DashboardFormatter.format_positions(state)
+        assert "LONG" in msg
+        assert "50,000" in msg
+    
+    def test_format_trades_no_trades(self):
+        """Should show no trades message."""
+        from alerts.formatters import DashboardFormatter, TradingState
+        
+        state = TradingState(recent_trades=[])
+        msg = DashboardFormatter.format_trades(state)
+        assert "No Trades" in msg
+    
+    def test_format_trades_with_trades(self):
+        """Should show recent trades."""
+        from alerts.formatters import DashboardFormatter, TradingState
+        
+        state = TradingState(
+            recent_trades=[
+                {"direction": "LONG", "pnl": 12.50, "exit_reason": "TP", "duration_minutes": 30},
+                {"direction": "SHORT", "pnl": -8.30, "exit_reason": "SL", "duration_minutes": 15},
+            ]
+        )
+        
+        msg = DashboardFormatter.format_trades(state)
+        assert "LONG" in msg
+        assert "SHORT" in msg
+    
+    def test_format_stop_confirmed(self):
+        """Stop confirmation should be clear."""
+        from alerts.formatters import DashboardFormatter
+        
+        msg = DashboardFormatter.format_stop_confirmed()
+        assert "Stopped" in msg
+        assert "/starttrading" in msg
+    
+    def test_format_start_confirmed(self):
+        """Start confirmation should be clear."""
+        from alerts.formatters import DashboardFormatter
+        
+        msg = DashboardFormatter.format_start_confirmed()
+        assert "Resumed" in msg
+        assert "/stop" in msg
+    
+    def test_format_approval_request(self):
+        """Approval request should include action and timeout."""
+        from alerts.formatters import DashboardFormatter
+        
+        msg = DashboardFormatter.format_approval_request("Parameter Rollback", "stop=1.5 → 0.5")
+        assert "Approval Required" in msg
+        assert "Parameter Rollback" in msg
+    
+    def test_format_subscriptions(self):
+        """Subscriptions list should show active and available."""
+        from alerts.formatters import DashboardFormatter
+        
+        msg = DashboardFormatter.format_subscriptions(
+            subscribed=["trade_executed", "position_closed"],
+            available=["trade_executed", "position_closed", "regime_change"],
+        )
+        assert "trade_executed" in msg
+        assert "position_closed" in msg
+
+
+class TestSubscriptionManager:
+    """Test subscription management."""
+    
+    def test_default_subscriptions_critical_only(self):
+        """Default should only subscribe to critical alerts."""
+        from alerts.subscriptions import SubscriptionManager, ALERT_CATEGORIES
+        
+        mgr = SubscriptionManager()
+        subs = mgr.get_subscriptions("test_chat")
+        
+        # Should only have critical alerts
+        for sub in subs:
+            assert sub in ALERT_CATEGORIES["critical"]
+    
+    def test_subscribe_to_type(self):
+        """Should be able to subscribe to specific type."""
+        from alerts.subscriptions import SubscriptionManager
+        
+        mgr = SubscriptionManager()
+        assert mgr.subscribe("test_chat", "trade_executed") is True
+        assert mgr.is_subscribed("test_chat", "trade_executed") is True
+    
+    def test_subscribe_to_category(self):
+        """Should be able to subscribe to category."""
+        from alerts.subscriptions import SubscriptionManager, ALERT_CATEGORIES
+        
+        mgr = SubscriptionManager()
+        assert mgr.subscribe("test_chat", "trading") is True
+        
+        for alert_type in ALERT_CATEGORIES["trading"]:
+            assert mgr.is_subscribed("test_chat", alert_type) is True
+    
+    def test_unsubscribe_from_type(self):
+        """Should be able to unsubscribe from specific type."""
+        from alerts.subscriptions import SubscriptionManager
+        
+        mgr = SubscriptionManager()
+        mgr.subscribe("test_chat", "trade_executed")
+        assert mgr.unsubscribe("test_chat", "trade_executed") is True
+        assert mgr.is_subscribed("test_chat", "trade_executed") is False
+    
+    def test_unsubscribe_from_category(self):
+        """Should be able to unsubscribe from category."""
+        from alerts.subscriptions import SubscriptionManager, ALERT_CATEGORIES
+        
+        mgr = SubscriptionManager()
+        mgr.subscribe("test_chat", "trading")
+        assert mgr.unsubscribe("test_chat", "trading") is True
+        
+        for alert_type in ALERT_CATEGORIES["trading"]:
+            assert mgr.is_subscribed("test_chat", alert_type) is False
+    
+    def test_should_send_alert_critical_always(self):
+        """Critical alerts should always be sent regardless of subscription."""
+        from alerts.subscriptions import SubscriptionManager, ALERT_CATEGORIES
+        
+        mgr = SubscriptionManager()
+        # User has no subscriptions
+        
+        for alert_type in ALERT_CATEGORIES["critical"]:
+            assert mgr.should_send_alert("test_chat", alert_type) is True
+    
+    def test_should_send_alert_filtered(self):
+        """Non-subscribed alerts should be filtered."""
+        from alerts.subscriptions import SubscriptionManager
+        
+        mgr = SubscriptionManager()
+        mgr.subscribe("test_chat", "trade_executed")
+        
+        # Should not send non-subscribed alerts
+        assert mgr.should_send_alert("test_chat", "heartbeat") is False
+    
+    def test_get_available_types(self):
+        """Should return all available alert types."""
+        from alerts.subscriptions import SubscriptionManager, ALL_ALERT_TYPES
+        
+        mgr = SubscriptionManager()
+        available = mgr.get_available_types()
+        
+        assert len(available) == len(ALL_ALERT_TYPES)
+    
+    def test_get_categories(self):
+        """Should return all available categories."""
+        from alerts.subscriptions import SubscriptionManager
+        
+        mgr = SubscriptionManager()
+        categories = mgr.get_categories()
+        
+        assert "all" in categories
+        assert "none" in categories
+        assert "trading" in categories
+        assert "risk" in categories
+
+
+class TestKeyboards:
+    """Test inline keyboard builders."""
+    
+    def test_main_dashboard_keyboard(self):
+        """Main dashboard should have all view buttons."""
+        from alerts.keyboards import Keyboards
+        
+        kb = Keyboards.main_dashboard()
+        
+        # Should have multiple rows
+        assert len(kb) >= 3
+        
+        # Check for expected callbacks
+        all_callbacks = [btn["callback_data"] for row in kb for btn in row]
+        assert "view:dashboard" in all_callbacks
+        assert "view:pnl" in all_callbacks
+        assert "action:stop" in all_callbacks
+        assert "action:start" in all_callbacks
+    
+    def test_quick_actions_keyboard(self):
+        """Quick actions should have dashboard, stop, start."""
+        from alerts.keyboards import Keyboards
+        
+        kb = Keyboards.quick_actions()
+        all_callbacks = [btn["callback_data"] for row in kb for btn in row]
+        
+        assert "view:dashboard" in all_callbacks
+        assert "action:stop" in all_callbacks
+        assert "action:start" in all_callbacks
+    
+    def test_approval_keyboard(self):
+        """Approval keyboard should have approve/deny buttons."""
+        from alerts.keyboards import Keyboards
+        
+        kb = Keyboards.approval("test_action", "key123")
+        all_callbacks = [btn["callback_data"] for row in kb for btn in row]
+        
+        assert "approve:key123" in all_callbacks
+        assert "deny:key123" in all_callbacks
+    
+    def test_subscription_categories_keyboard(self):
+        """Should have category subscription buttons."""
+        from alerts.keyboards import Keyboards
+        
+        kb = Keyboards.subscription_categories()
+        all_callbacks = [btn["callback_data"] for row in kb for btn in row]
+        
+        assert "sub:trading" in all_callbacks
+        assert "sub:risk" in all_callbacks
+        assert "sub:all" in all_callbacks
+        assert "sub:none" in all_callbacks
+    
+    def test_back_to_dashboard_keyboard(self):
+        """Should have back to dashboard button."""
+        from alerts.keyboards import Keyboards
+        
+        kb = Keyboards.back_to_dashboard()
+        all_callbacks = [btn["callback_data"] for row in kb for btn in row]
+        
+        assert "view:dashboard" in all_callbacks
+    
+    def test_confirm_stop_keyboard(self):
+        """Should have confirm stop and cancel buttons."""
+        from alerts.keyboards import Keyboards
+        
+        kb = Keyboards.confirm_stop()
+        all_callbacks = [btn["callback_data"] for row in kb for btn in row]
+        
+        assert "action:stop_confirm" in all_callbacks
+        assert "view:dashboard" in all_callbacks
+    
+    def test_keyboard_builder_fluent_api(self):
+        """Keyboard builder should support fluent API."""
+        from alerts.keyboards import KeyboardBuilder
+        
+        kb = KeyboardBuilder() \
+            .row() \
+            .button("A", "a") \
+            .button("B", "b") \
+            .row() \
+            .button("C", "c") \
+            .build()
+        
+        assert len(kb) == 2
+        assert len(kb[0]) == 2
+        assert len(kb[1]) == 1
+        assert kb[0][0]["callback_data"] == "a"
+        assert kb[1][0]["callback_data"] == "c"
+
+
+class TestTelegramBot:
+    """Test Telegram bot class."""
+    
+    @pytest.fixture
+    def mock_bot(self):
+        """Create bot with mocked API."""
+        from alerts.telegram_bot import TelegramBot
+        from alerts.formatters import TradingState
+        
+        bot = TelegramBot(
+            bot_token="test_token",
+            chat_id="test_chat",
+            state_provider=lambda: TradingState(
+                regime="BULL",
+                signal_direction="LONG",
+                signal_strength=0.75,
+                daily_pnl=100.0,
+                total_pnl=500.0,
+            ),
+        )
+        
+        # Mock the API calls
+        bot._make_request = Mock(return_value={"ok": True})
+        
+        return bot
+    
+    def test_bot_initialization(self, mock_bot):
+        """Bot should initialize with correct config."""
+        assert mock_bot.bot_token == "test_token"
+        assert mock_bot.chat_id == "test_chat"
+        assert mock_bot._running is False
+    
+    def test_send_message(self, mock_bot):
+        """Should send message with correct format."""
+        result = mock_bot.send_message("Test message")
+        assert result is True
+        
+        mock_bot._make_request.assert_called_once()
+        args = mock_bot._make_request.call_args
+        assert args[0][0] == "sendMessage"
+        data = args[1] if 'data' in args[1] else args[0][1]
+        assert data["text"] == "Test message"
+        assert data["parse_mode"] == "HTML"
+    
+    def test_send_message_with_keyboard(self, mock_bot):
+        """Should send message with inline keyboard."""
+        from alerts.keyboards import Keyboards
+        
+        kb = Keyboards.quick_actions()
+        result = mock_bot.send_message("Test", reply_markup=kb)
+        assert result is True
+        
+        args = mock_bot._make_request.call_args
+        data = args[1] if 'data' in args[1] else args[0][1]
+        assert "reply_markup" in data
+        assert "inline_keyboard" in data["reply_markup"]
+    
+    def test_is_trading_active_property(self, mock_bot):
+        """Should track trading active state."""
+        assert mock_bot.is_trading_active is True
+        mock_bot.is_trading_active = False
+        assert mock_bot.is_trading_active is False
+    
+    def test_request_approval(self, mock_bot):
+        """Should create approval request with callback."""
+        callback_results = []
+        
+        action_key = mock_bot.request_approval(
+            action="Test Action",
+            details="Test details",
+            callback=lambda x: callback_results.append(x),
+            timeout=1,
+        )
+        
+        assert action_key is not None
+        assert action_key in mock_bot._approval_callbacks
+        
+        # Verify message was sent
+        mock_bot._make_request.assert_called_once()
+    
+    def test_process_command_start(self, mock_bot):
+        """Should handle /start command."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._process_command("/start", {"chat": {"id": "test_chat"}})
+        
+        mock_bot.send_message.assert_called_once()
+        args = mock_bot.send_message.call_args
+        assert "Welcome" in args[0][0] or "welcome" in args[0][0].lower()
+    
+    def test_process_command_help(self, mock_bot):
+        """Should handle /help command."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._process_command("/help", {"chat": {"id": "test_chat"}})
+        
+        mock_bot.send_message.assert_called_once()
+    
+    def test_process_command_status(self, mock_bot):
+        """Should handle /status command."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._process_command("/status", {"chat": {"id": "test_chat"}})
+        
+        mock_bot.send_message.assert_called_once()
+    
+    def test_process_command_pnl(self, mock_bot):
+        """Should handle /pnl command."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._process_command("/pnl", {"chat": {"id": "test_chat"}})
+        
+        mock_bot.send_message.assert_called_once()
+    
+    def test_process_command_signals(self, mock_bot):
+        """Should handle /signals command."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._process_command("/signals", {"chat": {"id": "test_chat"}})
+        
+        mock_bot.send_message.assert_called_once()
+    
+    def test_process_command_unknown(self, mock_bot):
+        """Should handle unknown command."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._process_command("/unknown", {"chat": {"id": "test_chat"}})
+        
+        mock_bot.send_message.assert_called_once()
+        args = mock_bot.send_message.call_args
+        assert "Unknown" in args[0][0] or "unknown" in args[0][0].lower()
+    
+    def test_process_callback_view(self, mock_bot):
+        """Should handle view callbacks."""
+        mock_bot.send_message = Mock()
+        mock_bot.answer_callback = Mock()
+        
+        mock_bot._process_callback_query({
+            "id": "cb123",
+            "data": "view:dashboard",
+        })
+        
+        mock_bot.answer_callback.assert_called_once()
+    
+    def test_process_callback_action_stop(self, mock_bot):
+        """Should handle stop action callback."""
+        mock_bot.send_message = Mock()
+        mock_bot.answer_callback = Mock()
+        
+        mock_bot._process_callback_query({
+            "id": "cb123",
+            "data": "action:stop",
+        })
+        
+        mock_bot.answer_callback.assert_called_once()
+    
+    def test_process_callback_action_stop_confirm(self, mock_bot):
+        """Should stop trading on confirm."""
+        mock_bot.send_message = Mock()
+        mock_bot.answer_callback = Mock()
+        
+        mock_bot._process_callback_query({
+            "id": "cb123",
+            "data": "action:stop_confirm",
+        })
+        
+        assert mock_bot.is_trading_active is False
+    
+    def test_process_callback_action_start_confirm(self, mock_bot):
+        """Should start trading on confirm."""
+        mock_bot.send_message = Mock()
+        mock_bot.answer_callback = Mock()
+        mock_bot.is_trading_active = False
+        
+        mock_bot._process_callback_query({
+            "id": "cb123",
+            "data": "action:start_confirm",
+        })
+        
+        assert mock_bot.is_trading_active is True
+    
+    def test_process_callback_subscription(self, mock_bot):
+        """Should handle subscription callback."""
+        mock_bot.send_message = Mock()
+        mock_bot.answer_callback = Mock()
+        
+        mock_bot._process_callback_query({
+            "id": "cb123",
+            "data": "sub:trading",
+        })
+        
+        mock_bot.answer_callback.assert_called_once()
+    
+    def test_handle_subscribe_command(self, mock_bot):
+        """Should handle /subscribe command."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._handle_subscribe(
+            {"chat": {"id": "test_chat"}},
+            ["trade_executed"]
+        )
+        
+        mock_bot.send_message.assert_called_once()
+        args = mock_bot.send_message.call_args
+        assert "Subscribed" in args[0][0]
+    
+    def test_handle_subscribe_no_args(self, mock_bot):
+        """Should show usage when no args."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._handle_subscribe(
+            {"chat": {"id": "test_chat"}},
+            []
+        )
+        
+        mock_bot.send_message.assert_called_once()
+        args = mock_bot.send_message.call_args
+        assert "Usage" in args[0][0]
+    
+    def test_handle_unsubscribe_command(self, mock_bot):
+        """Should handle /unsubscribe command."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._handle_unsubscribe(
+            {"chat": {"id": "test_chat"}},
+            ["trade_executed"]
+        )
+        
+        mock_bot.send_message.assert_called_once()
+    
+    def test_handle_subscriptions_command(self, mock_bot):
+        """Should handle /subscriptions command."""
+        mock_bot.send_message = Mock()
+        
+        mock_bot._handle_subscriptions(
+            {"chat": {"id": "test_chat"}},
+            []
+        )
+        
+        mock_bot.send_message.assert_called_once()

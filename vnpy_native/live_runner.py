@@ -69,6 +69,13 @@ class SiqeLiveRunner:
         
         # Thread pool for async operations
         self._executor = None
+        
+        # Telegram interactive bot
+        self._telegram_bot = None
+        self._bot_thread = None
+        
+        # Trading state for bot
+        self._trading_state = None
 
     def setup(self) -> None:
         """Initialize VN.PY MainEngine, EventEngine, and gateway."""
@@ -297,6 +304,19 @@ class SiqeLiveRunner:
     def close(self) -> None:
         """Shut down all engines."""
         self.stop_strategy()
+        
+        # Stop Telegram bot
+        if self._telegram_bot:
+            self._telegram_bot.stop_polling()
+            logger.info("Telegram bot stopped")
+        
+        # Send shutdown alert
+        if self._alert_manager:
+            try:
+                self._alert_manager.system_shutdown(reason="Manual shutdown")
+            except Exception as e:
+                logger.error(f"Error sending shutdown alert: {e}")
+        
         if self.main_engine:
             self.main_engine.close()
         logger.info("VN.PY engine closed")
@@ -312,6 +332,9 @@ class SiqeLiveRunner:
         
         # Initialize alert manager
         self._init_alert_manager()
+        
+        # Initialize Telegram interactive bot
+        self._init_telegram_bot()
     
     def _init_alert_manager(self) -> None:
         """Initialize Telegram alert manager."""
@@ -351,6 +374,57 @@ class SiqeLiveRunner:
         except Exception as e:
             logger.error(f"Error initializing alert manager: {e}")
             self._alert_manager = None
+    
+    def _init_telegram_bot(self) -> None:
+        """Initialize Telegram interactive bot."""
+        try:
+            from alerts.telegram_bot import create_bot
+            from alerts.formatters import TradingState
+            
+            self._trading_state = TradingState(
+                symbol=self.symbol.upper(),
+                leverage=self.strategy_params.get("leverage", 35),
+                mode="PAPER" if self.server == "TESTNET" else "LIVE",
+            )
+            
+            def state_provider():
+                """Provide current trading state for the bot."""
+                if self._trading_state:
+                    # Update live metrics
+                    risk_status = self.get_risk_status()
+                    self._trading_state.daily_pnl = risk_status.get("daily_pnl", 0.0)
+                    self._trading_state.total_trades = risk_status.get("trades_today", 0)
+                    
+                    # Update from strategy if available
+                    cta_engine = self.main_engine.get_engine("CtaStrategy") if self.main_engine else None
+                    if cta_engine:
+                        for strategy in cta_engine.strategies.values():
+                            if strategy.strategy_name == self.strategy_name:
+                                if hasattr(strategy, 'pos') and strategy.pos != 0:
+                                    self._trading_state.position_side = "LONG" if strategy.pos > 0 else "SHORT"
+                                    self._trading_state.position_size = abs(strategy.pos)
+                                if hasattr(strategy, 'trading'):
+                                    self._trading_state.is_trading_active = strategy.trading
+                                break
+                    
+                    import time
+                    self._trading_state.uptime_seconds = int(time.time() - getattr(self, '_start_time', time.time()))
+                
+                return self._trading_state
+            
+            self._telegram_bot = create_bot(state_provider=state_provider)
+            
+            if self._telegram_bot:
+                self._bot_thread = self._telegram_bot.start_polling_thread()
+                logger.info("Telegram interactive bot started")
+            else:
+                logger.info("Telegram interactive bot: NOT CONFIGURED (set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)")
+        except ImportError as e:
+            logger.warning(f"Telegram bot module not available: {e}")
+            self._telegram_bot = None
+        except Exception as e:
+            logger.error(f"Error initializing Telegram bot: {e}")
+            self._telegram_bot = None
 
     def _on_trade(self, trade) -> None:
         """Handle completed trade - send to SIQEEngine for risk/learning."""

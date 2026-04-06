@@ -18,6 +18,7 @@ from alerts.alert_types import (
     create_alert,
 )
 from alerts.channels import BaseChannel, TelegramChannel, create_telegram_channel
+from alerts.subscriptions import get_subscription_manager
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,14 @@ class AlertManager:
         
         if not self.is_configured():
             logger.debug("No channels configured, skipping alert")
+            return False
+        
+        # Check subscription filtering
+        sub_manager = get_subscription_manager()
+        chat_id = getattr(self.telegram, 'chat_id', None) if self.telegram else None
+        if chat_id and not sub_manager.should_send_alert(chat_id, alert.alert_type.value):
+            logger.debug(f"Alert filtered by subscription: {alert.alert_type.value}")
+            self._record_alert(alert, sent=False)
             return False
         
         # Check rate limiting
