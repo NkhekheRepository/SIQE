@@ -163,13 +163,15 @@ class TelegramBot:
                 params={"offset": self._last_update_id + 1, "timeout": 1},
                 timeout=5,
             )
+            logger.info(f"getUpdates response status: {result.status_code}")
             if result.status_code == 200:
                 data = result.json()
                 if data.get("ok"):
                     updates = data.get("result", [])
-                    if updates:
-                        logger.info(f"Got {len(updates)} updates: {[u.get('update_id') for u in updates]}")
+                    logger.info(f"Got {len(updates)} updates, last_id={self._last_update_id}")
                     return updates
+                else:
+                    logger.warning(f"getUpdates returned error: {data}")
         except Exception as e:
             logger.error(f"getUpdates failed: {e}")
         return []
@@ -646,12 +648,14 @@ Use /subscribe <type> to add alerts.
         last_state_update = 0
         refresh_interval = 30  # seconds
         
+        logger.info("Polling loop started, _running=True")
+        
         while self._running:
             try:
                 current_time = time.time()
                 updates = self._get_updates()
                 if updates:
-                    logger.info(f"Received {len(updates)} updates")
+                    logger.info(f"Received {len(updates)} updates: {[u.get('update_id') for u in updates]}")
                 for update in updates:
                     self._process_update(update)
                 
