@@ -3,24 +3,25 @@ Description=SIQE Autonomous Trading System
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
 User=ubuntu
 WorkingDirectory=/home/ubuntu/siqe
 ExecStart=/usr/bin/python3 scripts/paper_trade_futures.py --name siqe_systemd
 Restart=on-failure
 RestartSec=30
-WatchdogSec=300
-StandardOutput=append:/home/ubuntu/siqe/logs/siqe_systemd.log
-StandardError=append:/home/ubuntu/siqe/logs/siqe_systemd.log
+WatchdogSec=30
+RuntimeMaxSec=86400
 
 # Environment
 Environment=PYTHONPATH=/home/ubuntu/siqe
 Environment=PYTHONHASHSEED=0
+Environment=CLOCK_TYPE=realtime
+Environment=DEBUG=false
 
 # Security
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=false
 PrivateTmp=true
 
 [Install]

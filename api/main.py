@@ -45,6 +45,43 @@ async def health_check():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/ready")
+async def readiness_check():
+    """Systemd watchdog readiness probe."""
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        status = engine_instance.get_status()
+        is_ready = (
+            status["running"]
+            and engine_instance.execution_adapter.is_initialized
+            and engine_instance.data_engine.is_initialized
+        )
+        if not is_ready:
+            raise HTTPException(status_code=503, detail="System not ready")
+
+        clock_info = {"type": type(engine_instance.clock).__name__}
+        if hasattr(engine_instance.clock, "wall_clock"):
+            clock_info["wall_clock"] = engine_instance.clock.wall_clock.isoformat()
+
+        return JSONResponse(
+            content={
+                "status": "ready",
+                "clock": clock_info,
+                "execution_mode": "live" if not engine_instance.settings.use_mock_execution else "mock",
+                "data_source": "real" if engine_instance.settings.use_real_data else "simulated",
+                "total_trades": status["total_trades"],
+                "events_processed": status["total_events_processed"],
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Readiness check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health/detailed")
 async def health_detailed():
     if engine_instance is None:

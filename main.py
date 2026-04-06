@@ -29,7 +29,7 @@ from learning.learning_engine import LearningEngine
 from config.settings import Settings
 from alerts.alert_manager import AlertManager, get_alert_manager
 from infra.logger import setup_logging, InterceptHandler
-from core.clock import EventClock, IDGenerator
+from core.clock import EventClock, RealTimeClock, IDGenerator
 from core.retry import with_retry
 from models.trade import (
     MarketEvent, Signal, EVResult, Decision, Trade,
@@ -53,7 +53,12 @@ class SIQEEngine:
         self.running = False
         self.shutdown_event = asyncio.Event()
 
-        self.clock = EventClock()
+        clock_type = self.settings.get("clock_type", "realtime")
+        daily_reset_hour = self.settings.get("daily_reset_hour", 0)
+        if clock_type == "realtime":
+            self.clock = RealTimeClock(daily_reset_hour=daily_reset_hour)
+        else:
+            self.clock = EventClock()
         self.id_gen = lambda prefix: IDGenerator(prefix, self.clock)
 
         self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=self.settings.max_queue_size)
