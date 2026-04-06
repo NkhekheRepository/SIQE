@@ -58,6 +58,7 @@ class SIQEEngine:
         daily_reset_hour = self.settings.get("daily_reset_hour", 0)
         if clock_type == "realtime":
             self.clock = RealTimeClock(daily_reset_hour=daily_reset_hour)
+            self.clock.on_daily_reset(self._on_daily_reset)
         else:
             self.clock = EventClock()
         self.id_gen = lambda prefix: IDGenerator(prefix, self.clock)
@@ -558,6 +559,20 @@ class SIQEEngine:
             logger.error(f"A/B test error: {e}")
             return {"error": str(e)}
 
+    async def _on_daily_reset(self):
+        """Handle daily reset: clear daily metrics, save state snapshot."""
+        logger.info("Daily reset triggered — clearing daily metrics")
+        await self.risk_engine.reset_daily_metrics()
+        try:
+            await self.state_manager.save_state(
+                risk_engine=self.risk_engine,
+                meta_harness=self.meta_harness,
+            )
+        except Exception as e:
+            logger.error(f"Error saving state during daily reset: {e}")
+        if self.alert_manager:
+            self.alert_manager.system_alert("daily_reset", "Daily metrics reset complete")
+
     def _record_latency(self, stage: str, ticks: int):
         samples = self._stage_latencies[stage]
         samples.append(ticks)
@@ -611,13 +626,23 @@ class SIQEEngine:
         logger.info("Shutting down SIQE V3 Engine...")
         self.running = False
         self.shutdown_event.set()
+        self.system_state = "SHUTTING_DOWN"
+
+        # Save final state snapshots
+        try:
+            await self.state_manager.save_state(
+                risk_engine=self.risk_engine,
+                meta_harness=self.meta_harness,
+            )
+            perf = await self.state_manager.get_trade_statistics()
+            if perf:
+                perf["timestamp"] = self.clock.now
+                await self.state_manager.save_performance_snapshot(perf)
+            logger.info("Final state snapshots saved")
+        except Exception as e:
+            logger.error(f"Error saving final state: {e}")
 
         await self.meta_harness.halt_system("System shutdown")
-        await self.state_manager.save_state(
-            risk_engine=self.risk_engine,
-            meta_harness=self.meta_harness,
-        )
-
         await self.data_engine.shutdown()
         await self.execution_adapter.shutdown()
         await self.feedback_loop.shutdown()
@@ -629,7 +654,8 @@ class SIQEEngine:
         logger.info(f"Memory at shutdown: current={current / 1024 / 1024:.1f}MB, peak={peak / 1024 / 1024:.1f}MB")
         tracemalloc.stop()
 
-        logger.info("SIQE V3 Engine shutdown complete")
+        self.system_state = "SHUTDOWN"
+        logger.info(f"SIQE V3 Engine shutdown complete — {self.total_trades} trades, {self.total_events_processed} events processed")
 
     def get_status(self) -> Dict[str, Any]:
         uptime = self.clock.now - self.start_seq if self.start_seq else 0
@@ -659,6 +685,33 @@ class SIQEEngine:
             "rejected_events": self.total_events_rejected,
             "memory_mb": current / 1024 / 1024,
             "peak_memory_mb": peak / 1024 / 1024,
+        }
+
+    async def get_comprehensive_status(self) -> Dict[str, Any]:
+        """Full system status for dashboard and monitoring."""
+        risk = await self.risk_engine.get_risk_status()
+        var = await self.risk_engine.get_var_status()
+        circuit = await self.risk_engine.get_circuit_breaker_status()
+        strategy_perf = await self.strategy_engine.get_strategy_performance()
+        learning = await self.get_learning_status()
+        metrics = self.get_metrics()
+
+        clock_info = {"type": type(self.clock).__name__, "seq": self.clock.now}
+        if hasattr(self.clock, "wall_clock"):
+            clock_info["wall_clock"] = self.clock.wall_clock.isoformat()
+            clock_info["hour_utc"] = self.clock.get_hour_utc()
+
+        return {
+            "system": self.get_status(),
+            "clock": clock_info,
+            "risk": risk,
+            "var": var,
+            "circuit_breakers": circuit,
+            "strategies": strategy_perf,
+            "learning": learning,
+            "metrics": metrics,
+            "execution_mode": "live" if not self.settings.use_mock_execution else "mock",
+            "data_source": "real" if self.settings.use_real_data else "simulated",
         }
 
 
