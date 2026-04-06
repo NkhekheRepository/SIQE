@@ -479,6 +479,85 @@ async def portfolio_positions():
     except Exception as e:
         logger.error(f"Error getting positions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/backtest/walk_forward")
+async def run_walk_forward(symbol: str = "BTCUSDT", n_splits: int = 5):
+    """Trigger walk-forward optimization on historical data."""
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        result = await engine_instance.run_walk_forward_optimization(symbol=symbol, n_splits=n_splits)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Walk-forward error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/backtest/ab_test")
+async def run_ab_test(strategy_a: str, strategy_b: str, symbol: str = "BTCUSDT"):
+    """Run A/B test between two strategy variants."""
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        result = await engine_instance.run_ab_test(strategy_a=strategy_a, strategy_b=strategy_b, symbol=symbol)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"A/B test error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/backtest/mtf_evaluation")
+async def mtf_evaluation(symbol: str = "BTCUSDT"):
+    """Evaluate strategy with and without multi-timeframe confirmation."""
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        from strategy_engine.multitimeframe import MultiTimeframeEvaluator
+        import os
+        import pandas as pd
+
+        parquet_path = engine_instance.settings.get("historical_data_path", "data/binance_futures/parquet/")
+        df_15m = None
+        df_4h = None
+
+        for f in os.listdir(parquet_path):
+            if f.endswith(".parquet") and "_train" not in f and "_test" not in f:
+                fp = os.path.join(parquet_path, f)
+                df = pd.read_parquet(fp)
+                cols_lower = {c.lower(): c for c in df.columns}
+                rename_map = {}
+                for std_col in ["open", "high", "low", "close", "volume"]:
+                    if std_col in cols_lower:
+                        rename_map[cols_lower[std_col]] = std_col
+                df = df.rename(columns=rename_map)
+                if "15m" in f or "15_min" in f:
+                    df_15m = df
+                elif "4h" in f or "4h" in f:
+                    df_4h = df
+
+        if df_15m is None or df_4h is None:
+            raise HTTPException(status_code=400, detail="Insufficient MTF data")
+
+        evaluator = MultiTimeframeEvaluator()
+        result = evaluator.evaluate_with_mtf(df_15m, df_4h)
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"MTF evaluation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error(f"Error getting emergency status: {e}")
         raise HTTPException(status_code=500, detail=str(e))

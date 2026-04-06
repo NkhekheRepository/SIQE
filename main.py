@@ -17,6 +17,7 @@ import numpy as np
 
 from core.data_engine import DataEngine
 from strategy_engine.strategy_base import StrategyEngine
+from strategy_engine.multitimeframe import MultiTimeframeConfirmator, MTFSignal
 from ev_engine.ev_calculator import EVEngine
 from decision_engine.decision_maker import DecisionEngine
 from risk_engine.risk_manager import RiskEngine
@@ -75,6 +76,7 @@ class SIQEEngine:
         self.state_manager = StateManager(self.settings)
         self.regime_engine = RegimeEngine(self.settings, self.clock)
         self.learning_engine = LearningEngine(self.settings, self.clock)
+        self.mtf_confirmator = MultiTimeframeConfirmator()
         
         # Alert manager
         self.alert_manager: Optional[AlertManager] = None
@@ -300,6 +302,11 @@ class SIQEEngine:
             if not signals:
                 return
 
+            # Multi-timeframe confirmation
+            signals = await self._apply_mtf_confirmation(signals, event)
+            if not signals:
+                return
+
             ev_results = await asyncio.wait_for(
                 with_retry(
                     lambda: self.ev_engine.calculate_ev(signals, event, regime_result=regime),
@@ -403,6 +410,153 @@ class SIQEEngine:
                     stage="pipeline_execution",
                     error=str(e)
                 )
+
+    async def _apply_mtf_confirmation(self, signals, event):
+        """Apply multi-timeframe confirmation to filter signals."""
+        if not signals or not hasattr(self.data_engine, 'get_historical_data'):
+            return signals
+
+        try:
+            df_15m = await self.data_engine.get_historical_data(event.symbol, limit=200)
+            if df_15m is None or len(df_15m) < 50:
+                return signals
+
+            df_4h = None
+            try:
+                parquet_path = self.settings.get("historical_data_path", "data/binance_futures/parquet/")
+                import os
+                symbol_key = event.symbol.replace("USDT", "").lower()
+                for f in os.listdir(parquet_path):
+                    if "4h" in f and symbol_key in f.lower():
+                        import pandas as pd
+                        df_4h = pd.read_parquet(os.path.join(parquet_path, f))
+                        cols_lower = {c.lower(): c for c in df_4h.columns}
+                        rename_map = {}
+                        for std_col in ["open", "high", "low", "close", "volume"]:
+                            if std_col in cols_lower:
+                                rename_map[cols_lower[std_col]] = std_col
+                        df_4h = df_4h.rename(columns=rename_map)
+                        break
+            except Exception as e:
+                logger.debug(f"Could not load 4h data for MTF: {e}")
+
+            filtered_signals = []
+            for signal in signals:
+                signal_dir = 1 if signal.signal_type.value in ("long", "buy") else -1
+                if df_4h is not None and len(df_4h) > 50:
+                    mtf_result = self.mtf_confirmator.confirm_signal(
+                        signal_tf_data=df_15m,
+                        higher_tf_data=df_4h,
+                        original_signal=signal_dir,
+                    )
+                    if mtf_result.signal == MTFSignal.REJECTED:
+                        logger.debug(f"MTF rejected {signal.signal_type.value} for {event.symbol}")
+                        continue
+                    elif mtf_result.signal in (MTFSignal.WEAKENED_LONG, MTFSignal.WEAKENED_SHORT):
+                        from models.trade import Signal
+                        signal = Signal(
+                            signal_id=signal.signal_id,
+                            symbol=signal.symbol,
+                            signal_type=signal.signal_type,
+                            strength=signal.strength * 0.5,
+                            price=signal.price,
+                            strategy=signal.strategy,
+                            reason=f"{signal.reason} | MTF weakened",
+                            event_seq=signal.event_seq,
+                            regime=signal.regime if hasattr(signal, 'regime') else None,
+                            regime_confidence=signal.regime_confidence if hasattr(signal, 'regime_confidence') else None,
+                        )
+                    elif mtf_result.signal in (MTFSignal.CONFIRMED_LONG, MTFSignal.CONFIRMED_SHORT):
+                        from models.trade import Signal
+                        signal = Signal(
+                            signal_id=signal.signal_id,
+                            symbol=signal.symbol,
+                            signal_type=signal.signal_type,
+                            strength=min(1.0, signal.strength * 1.3),
+                            price=signal.price,
+                            strategy=signal.strategy,
+                            reason=f"{signal.reason} | MTF confirmed",
+                            event_seq=signal.event_seq,
+                            regime=signal.regime if hasattr(signal, 'regime') else None,
+                            regime_confidence=signal.regime_confidence if hasattr(signal, 'regime_confidence') else None,
+                        )
+                filtered_signals.append(signal)
+
+            return filtered_signals if filtered_signals else None
+        except Exception as e:
+            logger.debug(f"MTF confirmation error: {e}")
+            return signals
+
+    async def run_walk_forward_optimization(self, symbol: str = "BTCUSDT", n_splits: int = 5) -> Dict[str, Any]:
+        """Run walk-forward optimization on historical data."""
+        try:
+            from backtest.walk_forward import WalkForwardOptimizer
+            from backtest.data_provider import ParquetProvider
+
+            provider = ParquetProvider()
+            df = await self.data_engine.get_historical_data(symbol, limit=5000)
+            if df is None or len(df) < 500:
+                return {"error": f"Insufficient data for {symbol}: {len(df) if df is not None else 0} bars"}
+
+            wf_optimizer = WalkForwardOptimizer(n_splits=n_splits, train_pct=0.7)
+            results = wf_optimizer.run_walk_forward(df)
+
+            logger.info(f"Walk-forward optimization complete for {symbol}: {n_splits} splits")
+            return results
+        except Exception as e:
+            logger.error(f"Walk-forward optimization error: {e}")
+            return {"error": str(e)}
+
+    async def run_ab_test(self, strategy_a: str, strategy_b: str, symbol: str = "BTCUSDT") -> Dict[str, Any]:
+        """Run A/B test between two strategy variants."""
+        try:
+            from strategy_engine.ab_testing import ABTestRunner
+            from strategy_engine.config import IndicatorConfig
+
+            df = await self.data_engine.get_historical_data(symbol, limit=5000)
+            if df is None or len(df) < 500:
+                return {"error": f"Insufficient data for {symbol}"}
+
+            # Create two configs to compare
+            baseline = IndicatorConfig()
+            treatment = IndicatorConfig()
+
+            if strategy_a == "baseline" and strategy_b == "optimized":
+                treatment = IndicatorConfig(
+                    macd_fast=8, macd_slow=21, macd_signal=7,
+                    rsi_period=10, rsi_overbought=75, rsi_oversold=25,
+                )
+            elif strategy_a == "conservative" and strategy_b == "aggressive":
+                baseline = IndicatorConfig(
+                    bb_period=25, bb_std=2.5,
+                    rsi_period=14,
+                )
+                treatment = IndicatorConfig(
+                    bb_period=15, bb_std=1.8,
+                    rsi_period=10,
+                )
+            else:
+                treatment = IndicatorConfig(
+                    macd_fast=10, macd_slow=25,
+                    bb_period=18,
+                )
+
+            runner = ABTestRunner(baseline=baseline, treatment=treatment)
+            result = runner.run(df, n_simulations=100)
+            return {
+                "baseline_sharpe": result.baseline_sharpe,
+                "baseline_return": result.baseline_return,
+                "treatment_sharpe": result.treatment_sharpe,
+                "treatment_return": result.treatment_return,
+                "treatment_wins": result.treatment_wins,
+                "recommendation": result.recommendation,
+                "confidence": result.confidence,
+                "sharpe_p_value": result.sharpe_p_value,
+                "n_simulations": result.n_simulations,
+            }
+        except Exception as e:
+            logger.error(f"A/B test error: {e}")
+            return {"error": str(e)}
 
     def _record_latency(self, stage: str, ticks: int):
         samples = self._stage_latencies[stage]
