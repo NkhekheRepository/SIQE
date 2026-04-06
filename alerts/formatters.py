@@ -21,6 +21,7 @@ class TradingState:
     position_size: float = 0.0
     entry_price: float = 0.0
     unrealized_pnl: float = 0.0
+    realized_pnl: float = 0.0
     leverage: int = 10
     
     # P&L metrics
@@ -123,6 +124,10 @@ class DashboardFormatter:
             f"<b>Status:</b> {active_emoji} {'Trading' if state.is_trading_active else 'Stopped'} | Next: {state.next_check_seconds}s",
             "─" * 40,
             f"<b>Balance:</b> ${state.account_balance:,.2f} (Avail: ${state.available_balance:,.2f})",
+            f"<b>Unrealized:</b> {pnl_emoji} {pnl_sign}${state.unrealized_pnl:.2f}",
+            f"<b>Realized:</b> {pnl_sign}${state.realized_pnl:.2f}",
+            f"<b>Net P&L:</b> {pnl_emoji} {pnl_sign}${state.unrealized_pnl + state.realized_pnl:.2f}",
+            "─" * 40,
             f"<b>Today:</b> {pnl_emoji} {pnl_sign}${state.daily_pnl:.2f} ({pnl_sign}{state.daily_pnl_pct:.2%})",
             f"<b>This Week:</b> {week_emoji} {week_sign}${state.weekly_pnl:.2f} ({week_sign}{state.weekly_pnl_pct:.2%})",
             f"<b>All Time:</b> {pnl_sign}${state.total_pnl:.2f} ({pnl_sign}{state.total_pnl_pct:.2%})",
@@ -159,6 +164,8 @@ class DashboardFormatter:
             f"<b>Size:</b> {state.position_size} contracts",
             f"<b>Entry:</b> ${state.entry_price:,.2f}",
             f"<b>Unrealized P&L:</b> ${state.unrealized_pnl:.2f}",
+            f"<b>Realized P&L:</b> ${state.realized_pnl:.2f}",
+            f"<b>Net P&L:</b> ${state.unrealized_pnl + state.realized_pnl:.2f}",
             "─" * 40,
             f"<b>Stop Multiplier:</b> {state.stop_multiplier}x ATR",
             f"<b>TP Multiplier:</b> {state.tp_multiplier}x ATR",
@@ -174,30 +181,33 @@ class DashboardFormatter:
     def format_hedge_fund_view(state: TradingState) -> str:
         """Format Hedge Fund Manager view."""
         daily_emoji = "🟢" if state.daily_pnl >= 0 else "🔴"
-        weekly_emoji = "🟢" if state.weekly_pnl >= 0 else "🔴"
-        total_emoji = "🟢" if state.total_pnl >= 0 else "🔴"
+        total_emoji = "🟢" if (state.unrealized_pnl + state.realized_pnl) >= 0 else "🔴"
+        unreal_emoji = "🟢" if state.unrealized_pnl >= 0 else "🔴"
+        realized_emoji = "🟢" if state.realized_pnl >= 0 else "🔴"
         
         daily_sign = "+" if state.daily_pnl >= 0 else ""
-        weekly_sign = "+" if state.weekly_pnl >= 0 else ""
-        total_sign = "+" if state.total_pnl >= 0 else ""
+        unreal_sign = "+" if state.unrealized_pnl >= 0 else ""
+        realized_sign = "+" if state.realized_pnl >= 0 else ""
+        net_sign = "+" if (state.unrealized_pnl + state.realized_pnl) >= 0 else ""
+        
+        net_pnl = state.unrealized_pnl + state.realized_pnl
         
         lines = [
             "💰 HEDGE FUND MANAGER VIEW",
             "═" * 40,
-            f"<b>Portfolio Value:</b> $10,000.00",
+            f"<b>Account Balance:</b> ${state.account_balance:,.2f}",
             "─" * 40,
-            f"<b>Today's P&L:</b> {daily_emoji} {daily_sign}${state.daily_pnl:.2f} ({daily_sign}{state.daily_pnl_pct:.2%})",
-            f"<b>This Week:</b> {weekly_emoji} {weekly_sign}${state.weekly_pnl:.2f} ({weekly_sign}{state.weekly_pnl_pct:.2%})",
-            f"<b>Total P&L:</b> {total_emoji} {total_sign}${state.total_pnl:.2f} ({total_sign}{state.total_pnl_pct:.2%})",
+            f"<b>Unrealized P&L:</b> {unreal_emoji} {unreal_sign}${state.unrealized_pnl:.2f}",
+            f"<b>Realized P&L:</b> {realized_emoji} {realized_sign}${state.realized_pnl:.2f}",
+            f"<b>Net P&L:</b> {total_emoji} {net_sign}${net_pnl:.2f}",
+            "─" * 40,
+            f"<b>Today's P&L:</b> {daily_emoji} {daily_sign}${state.daily_pnl:.2f}",
             "─" * 40,
             f"<b>Max Drawdown:</b> 🔴 {state.max_drawdown:.2%}",
             f"<b>Sharpe Ratio:</b> {state.sharpe_ratio:.2f}",
             f"<b>Win Rate:</b> {state.win_rate:.1%} ({state.winning_trades}W/{state.losing_trades}L)",
             "─" * 40,
             f"<b>Total Trades:</b> {state.total_trades}",
-            f"<b>Winning:</b> {state.winning_trades}",
-            f"<b>Losing:</b> {state.losing_trades}",
-            "─" * 40,
             f"<b>Avg Win:</b> ${state.avg_win:.2f}",
             f"<b>Avg Loss:</b> ${state.avg_loss:.2f}",
             f"<b>Profit Factor:</b> {state.profit_factor:.2f}",

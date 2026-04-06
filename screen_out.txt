@@ -1,0 +1,24 @@
+2026-04-06 10:55:48,167 StateProvider initialized with ./data/siqe.db
+StateProvider initialized: True
+Bot started. Chat ID: 7361240735
+Using real-time data from DuckDB
+2026-04-06 10:55:48,267 Telegram bot polling started
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

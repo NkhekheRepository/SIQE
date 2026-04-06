@@ -549,8 +549,8 @@ class SiqeLiveRunner:
                             logger.info(f"DEBUG: Binance API response: {resp.status_code}")
                             if resp.status_code == 200:
                                 data = resp.json()
-                                self._trading_state.total_pnl = float(data.get("totalCrossPnl", 0) or 0)
-                                logger.info(f"DEBUG: Realized P&L from Binance: ${self._trading_state.total_pnl}")
+                                self._trading_state.realized_pnl = float(data.get("totalCrossPnl", 0) or 0)
+                                logger.info(f"DEBUG: Realized P&L from Binance: ${self._trading_state.realized_pnl}")
                     except Exception as e:
                         logger.info(f"DEBUG: Binance P&L query exception: {e}")
                     

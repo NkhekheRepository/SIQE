@@ -1,0 +1,40 @@
+2026-04-06 10:38:57,525 INFO Bot created. Chat ID: 7361240735
+2026-04-06 10:38:57,526 INFO Bot polling started
+2026-04-06 10:38:57,527 INFO Bot is running. Press Ctrl+C to stop.
+2026-04-06 10:38:57,625 INFO Telegram bot polling started
+2026-04-06 10:44:56,691 INFO Got 1 updates: [549626139]
+2026-04-06 10:44:56,691 INFO Received 1 updates
+2026-04-06 10:44:56,691 INFO Processing update 549626139: ['update_id', 'message']
+2026-04-06 10:44:56,691 INFO Processing command: Test
+2026-04-06 10:45:02,329 INFO Got 1 updates: [549626140]
+2026-04-06 10:45:02,329 INFO Received 1 updates
+2026-04-06 10:45:02,329 INFO Processing update 549626140: ['update_id', 'callback_query']
+2026-04-06 10:45:02,329 INFO Callback query detected
+2026-04-06 10:45:19,844 INFO Got 1 updates: [549626141]
+2026-04-06 10:45:19,844 INFO Received 1 updates
+2026-04-06 10:45:19,844 INFO Processing update 549626141: ['update_id', 'callback_query']
+2026-04-06 10:45:19,844 INFO Callback query detected
+2026-04-06 10:46:03,110 INFO Got 1 updates: [549626142]
+2026-04-06 10:46:03,110 INFO Received 1 updates
+2026-04-06 10:46:03,110 INFO Processing update 549626142: ['update_id', 'callback_query']
+2026-04-06 10:46:03,110 INFO Callback query detected
+2026-04-06 10:46:16,867 INFO Got 1 updates: [549626143]
+2026-04-06 10:46:16,867 INFO Received 1 updates
+2026-04-06 10:46:16,867 INFO Processing update 549626143: ['update_id', 'callback_query']
+2026-04-06 10:46:16,867 INFO Callback query detected
+2026-04-06 10:46:43,459 INFO Got 1 updates: [549626144]
+2026-04-06 10:46:43,459 INFO Received 1 updates
+2026-04-06 10:46:43,459 INFO Processing update 549626144: ['update_id', 'callback_query']
+2026-04-06 10:46:43,459 INFO Callback query detected
+2026-04-06 10:47:13,289 INFO Got 1 updates: [549626145]
+2026-04-06 10:47:13,289 INFO Received 1 updates
+2026-04-06 10:47:13,289 INFO Processing update 549626145: ['update_id', 'callback_query']
+2026-04-06 10:47:13,289 INFO Callback query detected
+2026-04-06 10:47:21,005 INFO Got 1 updates: [549626146]
+2026-04-06 10:47:21,006 INFO Received 1 updates
+2026-04-06 10:47:21,006 INFO Processing update 549626146: ['update_id', 'callback_query']
+2026-04-06 10:47:21,006 INFO Callback query detected
+2026-04-06 10:57:01,605 INFO Received signal 15
+2026-04-06 10:57:01,605 INFO Stopping bot...
+2026-04-06 10:57:01,605 INFO Telegram bot polling stopped
+2026-04-06 10:57:01,605 INFO Bot stopped
