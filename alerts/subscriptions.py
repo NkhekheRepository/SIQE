@@ -29,6 +29,13 @@ ALERT_CATEGORIES = {
         "regime_change",
         "learning_triggered",
     ],
+    "regime": [
+        "regime_change",
+        "bull_started",
+        "bear_started",
+        "volatile_regime",
+        "ranging_regime",
+    ],
     "system": [
         "system_startup",
         "system_shutdown",

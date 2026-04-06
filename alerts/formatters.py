@@ -32,6 +32,12 @@ class TradingState:
     total_pnl_pct: float = 0.0
     max_drawdown: float = 0.0
     
+    # Performance metrics
+    sharpe_ratio: float = 0.0
+    profit_factor: float = 0.0
+    avg_win: float = 0.0
+    avg_loss: float = 0.0
+    
     # Trade stats
     total_trades: int = 0
     winning_trades: int = 0
@@ -60,12 +66,24 @@ class TradingState:
     # Volatility
     current_volatility: float = 0.0
     
+    # Account info
+    account_balance: float = 10000.0
+    available_balance: float = 10000.0
+    
     # Recent trades
     recent_trades: List[Dict[str, Any]] = None
+    
+    # Signal history for ML analysis
+    recent_signals: List[Dict[str, Any]] = None
+    signal_momentum: float = 0.0
+    signal_mean_reversion: float = 0.0
+    signal_volatility_breakout: float = 0.0
     
     def __post_init__(self):
         if self.recent_trades is None:
             self.recent_trades = []
+        if self.recent_signals is None:
+            self.recent_signals = []
 
 
 class DashboardFormatter:
@@ -104,6 +122,7 @@ class DashboardFormatter:
             f"<b>Position:</b> {state.position_side} {state.position_size} @ ${state.entry_price:,.0f}",
             f"<b>Status:</b> {active_emoji} {'Trading' if state.is_trading_active else 'Stopped'} | Next: {state.next_check_seconds}s",
             "─" * 40,
+            f"<b>Balance:</b> ${state.account_balance:,.2f} (Avail: ${state.available_balance:,.2f})",
             f"<b>Today:</b> {pnl_emoji} {pnl_sign}${state.daily_pnl:.2f} ({pnl_sign}{state.daily_pnl_pct:.2%})",
             f"<b>This Week:</b> {week_emoji} {week_sign}${state.weekly_pnl:.2f} ({week_sign}{state.weekly_pnl_pct:.2%})",
             f"<b>All Time:</b> {pnl_sign}${state.total_pnl:.2f} ({pnl_sign}{state.total_pnl_pct:.2%})",
@@ -172,15 +191,16 @@ class DashboardFormatter:
             f"<b>Total P&L:</b> {total_emoji} {total_sign}${state.total_pnl:.2f} ({total_sign}{state.total_pnl_pct:.2%})",
             "─" * 40,
             f"<b>Max Drawdown:</b> 🔴 {state.max_drawdown:.2%}",
+            f"<b>Sharpe Ratio:</b> {state.sharpe_ratio:.2f}",
             f"<b>Win Rate:</b> {state.win_rate:.1%} ({state.winning_trades}W/{state.losing_trades}L)",
             "─" * 40,
             f"<b>Total Trades:</b> {state.total_trades}",
             f"<b>Winning:</b> {state.winning_trades}",
             f"<b>Losing:</b> {state.losing_trades}",
             "─" * 40,
-            f"<b>Avg Win:</b> ${state.total_pnl / max(state.winning_trades, 1):.2f}" if state.winning_trades > 0 else "<b>Avg Win:</b> $0.00",
-            f"<b>Avg Loss:</b> $0.00",
-            f"<b>Profit Factor:</b> {state.total_pnl / max(abs(state.daily_pnl), 1):.2f}",
+            f"<b>Avg Win:</b> ${state.avg_win:.2f}",
+            f"<b>Avg Loss:</b> ${state.avg_loss:.2f}",
+            f"<b>Profit Factor:</b> {state.profit_factor:.2f}",
         ]
         
         return "\n".join(lines)
@@ -306,34 +326,45 @@ Your quantitative trading assistant is ready.
     @staticmethod
     def format_help() -> str:
         """Format help message."""
-        return """📖 <b>Command Reference</b>
+        return """📖 <b>SIQE V3 Command Reference</b>
 
-<b>📊 Views:</b>
-/dashboard - Main control panel
-/status - Quant developer view
-/pnl - Hedge fund view
-/signals - ML engineer view
-/positions - Open positions
-/trades - Recent trades
-/regime - Market regime
-/params - Strategy parameters
+<b>🏛️ Five Perspectives:</b>
+┌─────────────────────────────────────┐
+│ /status    → Quant Developer       │
+│ /pnl       → Hedge Fund Manager    │
+│ /signals   → AI/ML Engineer        │
+│ /dashboard → UX Designer           │
+│ /params    → Software Architect    │
+└─────────────────────────────────────┘
+
+<b>📊 Views (All Perspectives):</b>
+/dashboard      - Main control panel
+/status         - Quant developer view (regime, signals, position)
+/pnl            - Hedge fund view (P&L, Sharpe, win rate)
+/signals        - ML engineer view (signal components)
+/signal_history - Recent signals for ML training
+/positions      - Open positions
+/trades         - Recent trades
+/regime         - Market regime detection
+/params         - Strategy parameters
 
 <b>⚡ Actions:</b>
-/stop - Emergency stop trading
-/starttrading - Resume trading
-/refresh - Refresh all data
+/stop           - Emergency stop trading
+/starttrading   - Resume trading
+/refresh        - Refresh all data
 
 <b>🔔 Subscriptions:</b>
-/subscribe &lt;type&gt; - Subscribe to alerts
-/unsubscribe &lt;type&gt; - Unsubscribe
-/subscriptions - List subscriptions
+/subscribe &lt;type&gt;    - Subscribe to alerts
+/unsubscribe &lt;type&gt;  - Unsubscribe
+/subscriptions         - List subscriptions
 
-<b>Categories:</b>
-/subscribe trading - All trade alerts
-/subscribe risk - Risk alerts only
-/subscribe signals - Signal alerts
-/subscribe all - Everything
-/subscribe none - Only critical
+<b>Alert Categories:</b>
+/subscribe trading  - Trade execution alerts
+/subscribe risk     - Risk & circuit breaker alerts
+/subscribe signals  - Signal generation alerts
+/subscribe regime   - Regime change alerts
+/subscribe all     - All alerts
+/subscribe none    - Critical only
 """
     
     @staticmethod

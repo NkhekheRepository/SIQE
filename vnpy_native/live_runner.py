@@ -377,9 +377,16 @@ class SiqeLiveRunner:
     
     def _init_telegram_bot(self) -> None:
         """Initialize Telegram interactive bot."""
+        import os
+        logger.info("Initializing Telegram interactive bot...")
         try:
             from alerts.telegram_bot import create_bot
             from alerts.formatters import TradingState
+            
+            token_set = bool(os.getenv("TELEGRAM_BOT_TOKEN"))
+            chat_set = bool(os.getenv("TELEGRAM_CHAT_ID"))
+            logger.info(f"TELEGRAM_BOT_TOKEN set: {token_set}")
+            logger.info(f"TELEGRAM_CHAT_ID set: {chat_set}")
             
             self._trading_state = TradingState(
                 symbol=self.symbol.upper(),
@@ -395,24 +402,168 @@ class SiqeLiveRunner:
                     self._trading_state.daily_pnl = risk_status.get("daily_pnl", 0.0)
                     self._trading_state.total_trades = risk_status.get("trades_today", 0)
                     
+                    # Get actual positions from Binance
+                    if self.main_engine:
+                        try:
+                            binance_positions = self.main_engine.get_all_positions()
+                            logger.info(f"DEBUG: Binance positions: {[(p.symbol, p.volume, p.direction.value, getattr(p, 'unrealized_pnl', 'N/A'), getattr(p, 'pnl', 'N/A')) for p in binance_positions]}")
+                            for pos in binance_positions:
+                                if pos.symbol and "BTC" in pos.symbol:
+                                    if pos.volume != 0:
+                                        # Use volume sign to determine direction
+                                        if pos.volume > 0:
+                                            self._trading_state.position_side = "LONG"
+                                        else:
+                                            self._trading_state.position_side = "SHORT"
+                                        self._trading_state.position_size = abs(pos.volume)
+                                        self._trading_state.entry_price = pos.price
+                                        # Try unrealized_pnl first, fall back to pnl
+                                        self._trading_state.unrealized_pnl = getattr(pos, 'unrealized_pnl', pos.pnl or 0.0)
+                                        logger.info(f"DEBUG: Position updated: {self._trading_state.position_side} {self._trading_state.position_size} @ ${self._trading_state.entry_price} | Unreal PnL: ${self._trading_state.unrealized_pnl}")
+                                        break
+                        except Exception as e:
+                            logger.debug(f"Binance position query failed: {e}")
+                        
+                        # Get account info (specifically USDT balance)
+                        try:
+                            accounts = self.main_engine.get_all_accounts()
+                            logger.info(f"DEBUG: Accounts: {[(a.accountid, a.balance, a.available, getattr(a, 'currency', 'N/A')) for a in accounts]}")
+                            if accounts:
+                                # Find USDT account - be flexible with matching
+                                usdt_balance = 0.0
+                                usdt_available = 0.0
+                                for a in accounts:
+                                    acc_id = str(a.accountid).strip().upper()
+                                    logger.info(f"DEBUG: Checking account: '{acc_id}' vs 'USDT'")
+                                    if 'USDT' in acc_id:
+                                        usdt_balance = a.balance
+                                        usdt_available = a.available
+                                        logger.info(f"DEBUG: Found USDT account: balance={usdt_balance}, available={usdt_available}")
+                                        break
+                                self._trading_state.account_balance = usdt_balance
+                                self._trading_state.available_balance = usdt_available
+                                logger.info(f"DEBUG: Balance updated: ${self._trading_state.account_balance} (Avail: ${self._trading_state.available_balance})")
+                        except Exception as e:
+                            logger.debug(f"Account query failed: {e}")
+                    
                     # Update from strategy if available
                     cta_engine = self.main_engine.get_engine("CtaStrategy") if self.main_engine else None
                     if cta_engine:
                         for strategy in cta_engine.strategies.values():
                             if strategy.strategy_name == self.strategy_name:
+                                # Position from strategy (backup to Binance)
                                 if hasattr(strategy, 'pos') and strategy.pos != 0:
-                                    self._trading_state.position_side = "LONG" if strategy.pos > 0 else "SHORT"
-                                    self._trading_state.position_size = abs(strategy.pos)
+                                    if self._trading_state.position_size == 0:
+                                        self._trading_state.position_side = "LONG" if strategy.pos > 0 else "SHORT"
+                                        self._trading_state.position_size = abs(strategy.pos)
+                                if hasattr(strategy, 'avg_price') and self._trading_state.entry_price == 0:
+                                    self._trading_state.entry_price = strategy.avg_price
+                                
+                                # Regime from strategy
+                                if hasattr(strategy, 'regime'):
+                                    self._trading_state.regime = strategy.regime
+                                    self._trading_state.regime_confidence = 0.8
+                                
+                                # Trading status
                                 if hasattr(strategy, 'trading'):
                                     self._trading_state.is_trading_active = strategy.trading
+                                
+                                # Volatility
+                                if hasattr(strategy, 'atr_value'):
+                                    self._trading_state.current_volatility = strategy.atr_value
+                                
+                                # Signal data
+                                if hasattr(strategy, 'signal_direction'):
+                                    self._trading_state.signal_direction = strategy.signal_direction
+                                if hasattr(strategy, 'signal_strength'):
+                                    self._trading_state.signal_strength = strategy.signal_strength
+                                
+                                # Directional bias (fallback signal)
+                                if hasattr(strategy, 'directional_bias'):
+                                    if not self._trading_state.signal_direction or self._trading_state.signal_direction == "NEUTRAL":
+                                        self._trading_state.signal_direction = strategy.directional_bias
+                                
+                                # Signal components for ML view
+                                if hasattr(strategy, 'signal_momentum'):
+                                    self._trading_state.signal_momentum = strategy.signal_momentum
+                                if hasattr(strategy, 'signal_mean_reversion'):
+                                    self._trading_state.signal_mean_reversion = strategy.signal_mean_reversion
+                                if hasattr(strategy, 'signal_volatility_breakout'):
+                                    self._trading_state.signal_volatility_breakout = strategy.signal_volatility_breakout
+                                
+                                # Strategy params
+                                if hasattr(strategy, 'atr_stop_multiplier'):
+                                    self._trading_state.stop_multiplier = strategy.atr_stop_multiplier
+                                if hasattr(strategy, 'atr_target_multiplier'):
+                                    self._trading_state.tp_multiplier = strategy.atr_target_multiplier
+                                
+                                # Regime from strategy signal (fallback)
+                                if not self._trading_state.regime or self._trading_state.regime == "UNKNOWN":
+                                    # Check signal_direction first, then directional_bias
+                                    signal_for_regime = self._trading_state.signal_direction
+                                    if not signal_for_regime or signal_for_regime == "NEUTRAL":
+                                        signal_for_regime = getattr(strategy, 'directional_bias', None)
+                                    if signal_for_regime:
+                                        if signal_for_regime == "LONG" or signal_for_regime == "BULL":
+                                            self._trading_state.regime = "BULL"
+                                            self._trading_state.regime_confidence = 0.8
+                                        elif signal_for_regime == "SHORT" or signal_for_regime == "BEAR":
+                                            self._trading_state.regime = "BEAR"
+                                            self._trading_state.regime_confidence = 0.8
+                                
+                                logger.info(f"DEBUG: Strategy data - signal: {self._trading_state.signal_direction}, regime: {self._trading_state.regime}")
                                 break
+                    
+                    # Get regime from RegimeEngine
+                    if hasattr(self, 'regime_engine') and self.regime_engine:
+                        self._trading_state.regime = self.regime_engine.current_regime
+                        self._trading_state.regime_confidence = self.regime_engine.regime_confidence
+                    elif cta_engine:
+                        # Fallback: calculate regime from strategy
+                        for strategy in cta_engine.strategies.values():
+                            if strategy.strategy_name == self.strategy_name:
+                                signal_for_regime = getattr(strategy, 'signal_direction', None)
+                                if not signal_for_regime or signal_for_regime == "NEUTRAL":
+                                    signal_for_regime = getattr(strategy, 'directional_bias', None)
+                                if signal_for_regime:
+                                    if signal_for_regime == "LONG" or signal_for_regime == "BULL":
+                                        self._trading_state.regime = "BULL"
+                                        self._trading_state.regime_confidence = 0.8
+                                    elif signal_for_regime == "SHORT" or signal_for_regime == "BEAR":
+                                        self._trading_state.regime = "BEAR"
+                                        self._trading_state.regime_confidence = 0.8
+                                break
+                    
+                    # Get realized P&L from Binance API (use runner's stored credentials)
+                    try:
+                        if self.api_key and self.api_secret:
+                            import hashlib
+                            import time
+                            import hmac
+                            import requests
+                            timestamp = int(time.time() * 1000)
+                            query = f"timestamp={timestamp}"
+                            signature = hmac.new(self.api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+                            url = f"https://testnet.binancefuture.com/fapi/v2/account?{query}&signature={signature}"
+                            resp = requests.get(url, headers={"X-MBX-APIKEY": self.api_key}, timeout=5)
+                            logger.info(f"DEBUG: Binance API response: {resp.status_code}")
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                self._trading_state.total_pnl = float(data.get("totalCrossPnl", 0) or 0)
+                                logger.info(f"DEBUG: Realized P&L from Binance: ${self._trading_state.total_pnl}")
+                    except Exception as e:
+                        logger.info(f"DEBUG: Binance P&L query exception: {e}")
                     
                     import time
                     self._trading_state.uptime_seconds = int(time.time() - getattr(self, '_start_time', time.time()))
                 
-                return self._trading_state
+                    return self._trading_state
             
-            self._telegram_bot = create_bot(state_provider=state_provider)
+            self._telegram_bot = create_bot(
+                state_provider=state_provider,
+                start_trading_callback=self.start_strategy,
+                stop_trading_callback=self.stop_strategy,
+            )
             
             if self._telegram_bot:
                 self._bot_thread = self._telegram_bot.start_polling_thread()

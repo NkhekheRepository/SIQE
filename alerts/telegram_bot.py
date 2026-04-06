@@ -35,10 +35,14 @@ class TelegramBot:
         bot_token: str,
         chat_id: str,
         state_provider: Optional[Callable[[], TradingState]] = None,
+        start_trading_callback: Optional[Callable[[], None]] = None,
+        stop_trading_callback: Optional[Callable[[], None]] = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.state_provider = state_provider or self._default_state_provider
+        self.start_trading_callback = start_trading_callback
+        self.stop_trading_callback = stop_trading_callback
         self.subscription_manager = get_subscription_manager()
         
         self._api_url = f"https://api.telegram.org/bot{bot_token}"
@@ -66,6 +70,7 @@ class TelegramBot:
             "/status": self._handle_status,
             "/pnl": self._handle_pnl,
             "/signals": self._handle_signals,
+            "/signal_history": self._handle_signal_history,
             "/positions": self._handle_positions,
             "/trades": self._handle_trades,
             "/regime": self._handle_regime,
@@ -280,6 +285,40 @@ class TelegramBot:
             reply_markup=Keyboards.back_to_dashboard(),
         )
     
+    def _handle_signal_history(self, message: Dict, args: List[str]) -> None:
+        """Handle /signal_history command."""
+        state = self.state_provider()
+        
+        if not state.recent_signals:
+            self.send_message(
+                "📡 No Signal History\n" + "─" * 40 + "\nNo signals recorded yet.",
+                reply_markup=Keyboards.back_to_dashboard(),
+            )
+            return
+        
+        lines = ["📡 <b>Signal History (ML)</b>", "═" * 40]
+        
+        for i, sig in enumerate(state.recent_signals[:10]):
+            sig_type = sig.get("signal_type", "UNKNOWN")
+            ev = sig.get("ev_score", 0.0)
+            conf = sig.get("confidence", 0.0)
+            ts = sig.get("timestamp", "")
+            if ts:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    ts = dt.strftime("%H:%M")
+                except:
+                    pass
+            
+            emoji = "⬆️" if sig_type == "LONG" else "⬇️" if sig_type == "SHORT" else "➡️"
+            lines.append(f"{i+1}. {emoji} {sig_type} | EV:{ev:.2f} | {ts}")
+        
+        self.send_message(
+            "\n".join(lines),
+            reply_markup=Keyboards.back_to_dashboard(),
+        )
+    
     def _handle_positions(self, message: Dict, args: List[str]) -> None:
         """Handle /positions command."""
         state = self.state_provider()
@@ -408,6 +447,7 @@ Use /subscribe <type> to add alerts.
             "dashboard": self._handle_dashboard,
             "pnl": self._handle_pnl,
             "signals": self._handle_signals,
+            "signal_history": self._handle_signal_history,
             "status": self._handle_status,
             "params": self._handle_params,
             "regime": self._handle_regime,
@@ -438,10 +478,20 @@ Use /subscribe <type> to add alerts.
         elif action == "stop_confirm":
             self._is_trading_active = False
             self.answer_callback(callback_query_id, "Trading stopped")
+            if self.stop_trading_callback:
+                try:
+                    self.stop_trading_callback()
+                except Exception as e:
+                    logger.error(f"Error stopping trading: {e}")
             self.send_message(DashboardFormatter.format_stop_confirmed())
         elif action == "start_confirm":
             self._is_trading_active = True
             self.answer_callback(callback_query_id, "Trading started")
+            if self.start_trading_callback:
+                try:
+                    self.start_trading_callback()
+                except Exception as e:
+                    logger.error(f"Error starting trading: {e}")
             self.send_message(DashboardFormatter.format_start_confirmed())
         elif action == "refresh":
             self.answer_callback(callback_query_id, "Refreshing")
@@ -544,18 +594,72 @@ Use /subscribe <type> to add alerts.
         """Set trading active state."""
         self._is_trading_active = value
     
+    def _sync_offset(self) -> None:
+        """Sync offset with Telegram to avoid missing updates."""
+        try:
+            result = self._session.get(
+                f"{self._api_url}/getUpdates",
+                params={"limit": 1},
+                timeout=5,
+            )
+            if result.status_code == 200:
+                data = result.json()
+                if data.get("ok") and data.get("result"):
+                    self._last_update_id = data["result"][-1].get("update_id", 0)
+                    logger.info(f"Synced offset to {self._last_update_id}")
+        except Exception as e:
+            logger.warning(f"Offset sync failed: {e}")
+    
+    def _auto_refresh_dashboard(self) -> None:
+        """Auto-refresh dashboard for all tracked messages."""
+        try:
+            state = self.state_provider()
+            for msg_id in list(self._last_dashboard_message_ids):
+                try:
+                    self.edit_message(
+                        msg_id,
+                        DashboardFormatter.format_dashboard(state),
+                        reply_markup=Keyboards.main_dashboard(),
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"Auto-refresh failed: {e}")
+    
+    @property
+    def _last_dashboard_message_ids(self) -> list:
+        """Get list of dashboard message IDs to refresh."""
+        if not hasattr(self, '_dashboard_msg_ids'):
+            self._dashboard_msg_ids = []
+        return self._dashboard_msg_ids
+    
+    @_last_dashboard_message_ids.setter
+    def _last_dashboard_message_ids(self, value):
+        self._dashboard_msg_ids = value
+
     def start_polling(self) -> None:
-        """Start the bot polling loop."""
+        """Start the bot polling loop with optional auto-refresh."""
         self._running = True
+        self._sync_offset()
         logger.info("Telegram bot polling started")
+        
+        last_state_update = 0
+        refresh_interval = 30  # seconds
         
         while self._running:
             try:
+                current_time = time.time()
                 updates = self._get_updates()
                 if updates:
                     logger.info(f"Received {len(updates)} updates")
                 for update in updates:
                     self._process_update(update)
+                
+                # Auto-refresh dashboard every 30 seconds
+                if current_time - last_state_update >= refresh_interval:
+                    last_state_update = current_time
+                    self._auto_refresh_dashboard()
+                    
             except Exception as e:
                 logger.error(f"Error in polling loop: {e}")
                 time.sleep(5)
@@ -578,6 +682,8 @@ def create_bot(
     bot_token: Optional[str] = None,
     chat_id: Optional[str] = None,
     state_provider: Optional[Callable[[], TradingState]] = None,
+    start_trading_callback: Optional[Callable[[], None]] = None,
+    stop_trading_callback: Optional[Callable[[], None]] = None,
 ) -> Optional[TelegramBot]:
     """Create a Telegram bot from environment or direct config."""
     import os
@@ -592,4 +698,8 @@ def create_bot(
         logger.warning("Telegram bot not configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)")
         return None
     
-    return TelegramBot(token, chat, state_provider)
+    return TelegramBot(
+        token, chat, state_provider,
+        start_trading_callback=start_trading_callback,
+        stop_trading_callback=stop_trading_callback,
+    )
