@@ -2,6 +2,7 @@
 Learning Engine Module
 Controlled learning system that updates strategy parameters under strict constraints.
 Deterministic: uses EventClock, stability guard, wires params back to strategies.
+Phase 2: Wired ML optimizers (Bayesian, RF, GPR) for adaptive parameter tuning.
 """
 import asyncio
 import logging
@@ -29,12 +30,22 @@ class LearningEngine:
         self.rollback_enabled = settings.get("rollback_enabled", True)
         self.strategy_engine = None
         self.alert_manager = None  # For Telegram alerts
-        
+        self.data_engine = None
+        self.regime_engine = None
+
+        # ML optimizer (Phase 2)
+        self._ml_optimizer = None
+        self._ml_optimizer_type = settings.get("ml_optimizer", "bayesian")
+        self._optimization_window = settings.get("optimization_window", "24h")
+        self._feature_selection_enabled = settings.get("feature_selection_enabled", True)
+        self._ml_optimization_calls = 30  # Reduced from 50 for speed
+        self._ml_initialized = False
+
         # Adaptive learning configuration
         self.base_interval = settings.get("learning_interval_default", 15)
         self.min_interval = settings.get("learning_interval_min", 5)
         self.max_interval = settings.get("learning_interval_max", 75)
-        
+
         # Rollback configuration
         self.rollback_threshold = settings.get("rollback_threshold", 3)
         self.rollback_cooldown = settings.get("rollback_cooldown", 300)  # seconds
@@ -42,7 +53,7 @@ class LearningEngine:
         self._last_rollback_time = 0
         self._max_rollbacks_per_hour = 3
         self._rollback_count_hour = []
-        
+
         # Parameter bounds
         self._param_bounds = {
             "mean_reversion": {
@@ -61,15 +72,45 @@ class LearningEngine:
                 "confirmation_bars": (1, 5),
             },
         }
-        
+
         # For adaptive interval calculation
         self._recent_performance: List[float] = []
         self._performance_history: List[Dict] = []
+        self._trade_outcomes: List[Dict] = []
     
     def set_alert_manager(self, alert_manager) -> None:
         """Connect alert manager for notifications."""
         self.alert_manager = alert_manager
         logger.info("Alert manager connected to Learning Engine")
+
+    def set_data_engine(self, data_engine):
+        self.data_engine = data_engine
+
+    def set_regime_engine(self, regime_engine):
+        self.regime_engine = regime_engine
+
+    async def _init_ml_optimizer(self):
+        """Initialize ML optimizer based on configuration."""
+        if self._ml_initialized:
+            return
+        try:
+            from strategy_engine.ml_optimizer import (
+                BayesianOptOptimizer, RandomForestTuner, GPROptimizer,
+            )
+            optimizer_type = self._ml_optimizer_type.lower()
+            if optimizer_type == "bayesian":
+                self._ml_optimizer = BayesianOptOptimizer(n_calls=self._ml_optimization_calls, seed=42)
+            elif optimizer_type == "random_forest":
+                self._ml_optimizer = RandomForestTuner(n_estimators=50, n_samples=100, seed=42)
+            elif optimizer_type == "gpr":
+                self._ml_optimizer = GPROptimizer(n_samples=100, seed=42)
+            else:
+                self._ml_optimizer = BayesianOptOptimizer(n_calls=self._ml_optimization_calls, seed=42)
+            self._ml_initialized = True
+            logger.info(f"ML optimizer initialized: {optimizer_type}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize ML optimizer: {e}")
+            self._ml_optimizer = None
 
     async def initialize(self) -> bool:
         try:
@@ -89,6 +130,14 @@ class LearningEngine:
 
         try:
             sample_size = performance_data.get("sample_size", 0)
+
+            # Try ML-based optimization first if we have enough trade outcomes and historical data
+            ml_result = await self._try_ml_optimization(strategy_name, performance_data)
+            if ml_result and ml_result.get("success"):
+                logger.info(f"ML optimization succeeded for {strategy_name}")
+                return ml_result
+
+            # Fall back to heuristic parameter updates
             if sample_size < self.min_sample_size:
                 return {
                     "success": False,
@@ -161,6 +210,87 @@ class LearningEngine:
         except Exception as e:
             logger.error(f"Error updating parameters for {strategy_name}: {e}")
             return {"success": False, "error": str(e)}
+
+    async def _try_ml_optimization(self, strategy_name: str, performance_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Attempt ML-based parameter optimization. Returns None if not enough data."""
+        if not self._ml_initialized:
+            await self._init_ml_optimizer()
+
+        if self._ml_optimizer is None:
+            return None
+
+        if len(self._trade_outcomes) < 10:
+            return None
+
+        try:
+            from strategy_engine.config import IndicatorConfig, MarketRegime
+            import pandas as pd
+
+            # Get historical data from data engine
+            if self.data_engine is None:
+                return None
+
+            df = await self.data_engine.get_historical_data("BTCUSDT", limit=500)
+            if df is None or len(df) < 100 or "close" not in df.columns:
+                return None
+
+            # Determine current regime
+            regime = MarketRegime.RANGING
+            if self.regime_engine and hasattr(self.regime_engine, 'current_regime'):
+                regime_map = {
+                    "TRENDING": MarketRegime.TRENDING_UP,
+                    "RANGING": MarketRegime.RANGING,
+                    "VOLATILE": MarketRegime.VOLATILE,
+                    "MIXED": MarketRegime.RANGING,
+                }
+                regime = regime_map.get(self.regime_engine.current_regime, MarketRegime.RANGING)
+
+            current_config = IndicatorConfig()
+            optimized_config, metrics = self._ml_optimizer.optimize(
+                config=current_config,
+                market_data=df,
+                regime=regime,
+            )
+
+            if metrics.get("sharpe", -10) < -5:
+                return None
+
+            optimized_params = optimized_config.to_dict()
+            current_params = await self._get_current_parameters(strategy_name)
+            if not current_params:
+                return None
+
+            updates = {}
+            for param_name, new_value in optimized_params.items():
+                if param_name in current_params:
+                    old_value = current_params[param_name]
+                    if isinstance(old_value, (int, float)) and isinstance(new_value, (int, float)):
+                        change_pct = abs((new_value - old_value) / old_value) if old_value != 0 else 0
+                        if change_pct > 0.001 and change_pct <= self.max_param_change:
+                            updates[param_name] = {
+                                "old": old_value,
+                                "new": new_value,
+                                "change_pct": change_pct * 100,
+                            }
+
+            if not updates:
+                return None
+
+            update_result = await self._apply_parameter_changes(strategy_name, current_params, updates)
+            if update_result.get("success"):
+                await self._record_learning_event(
+                    strategy_name, current_params, updates,
+                    update_result, {**performance_data, "ml_optimized": True, "ml_metrics": metrics},
+                )
+                if self.alert_manager:
+                    changes_dict = {param: (v["old"], v["new"]) for param, v in updates.items()}
+                    self.alert_manager.parameter_update(f"{strategy_name} (ML)", changes_dict)
+                return update_result
+
+            return None
+        except Exception as e:
+            logger.debug(f"ML optimization attempt failed: {e}")
+            return None
 
     async def _get_current_parameters(self, strategy_name: str) -> Optional[Dict[str, Any]]:
         try:

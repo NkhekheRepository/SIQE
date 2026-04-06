@@ -202,10 +202,27 @@ class StrategyEngine:
         for strategy_name in self.strategies:
             performance[strategy_name] = {
                 "active": strategy_name in self.active_strategies,
-                "signal_count": int(np.random.randint(0, 100)),
-                "win_rate": float(np.random.uniform(0.4, 0.7)),
-                "avg_return": float(np.random.uniform(-0.01, 0.02)),
+                "signal_count": 0,
+                "win_rate": 0.0,
+                "avg_return": 0.0,
             }
+
+        if hasattr(self, '_state_manager') and self._state_manager and self._state_manager.is_initialized:
+            try:
+                db_stats = await self._state_manager.get_strategy_performance()
+                for stat in db_stats:
+                    strat = stat.get("strategy_name", "")
+                    if strat in performance:
+                        performance[strat].update({
+                            "signal_count": stat.get("total_trades", 0),
+                            "win_rate": stat.get("win_rate", 0.0),
+                            "avg_return": stat.get("avg_pnl", 0.0),
+                            "best_trade": stat.get("best_trade", 0.0),
+                            "worst_trade": stat.get("worst_trade", 0.0),
+                        })
+            except Exception as e:
+                logger.debug(f"Could not load strategy performance from DuckDB: {e}")
+
         return performance
 
     async def shutdown(self):

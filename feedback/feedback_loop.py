@@ -218,6 +218,12 @@ class FeedbackLoop:
                     "pnl": feedback_data.get("pnl", 0),
                 }
                 await self.learning_engine.update_parameters(strategy, perf)
+
+                if hasattr(self.learning_engine, '_trade_outcomes'):
+                    self.learning_engine._trade_outcomes.append(feedback_data)
+                    if len(self.learning_engine._trade_outcomes) > 500:
+                        self.learning_engine._trade_outcomes = self.learning_engine._trade_outcomes[-500:]
+
                 logger.debug(f"Feeding to learning system: {feedback_data.get('execution_id')} strategy={strategy}")
         except Exception as e:
             logger.error(f"Error feeding to learning system: {e}")

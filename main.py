@@ -133,6 +133,10 @@ class SIQEEngine:
             )
             self.feedback_loop.set_alert_manager(self.alert_manager)
 
+            self.learning_engine.set_data_engine(self.data_engine)
+            self.learning_engine.set_regime_engine(self.regime_engine)
+            self.strategy_engine._state_manager = self.state_manager
+
             logger.info("SIQE V3 Engine initialized successfully")
             return True
         except Exception as e:
