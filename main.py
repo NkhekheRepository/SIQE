@@ -206,7 +206,14 @@ class SIQEEngine:
         """
         try:
             trade_pnl = trade_data.get('pnl', 0)
+            symbol = trade_data.get('symbol', 'BTCUSDT')
             await self.risk_engine.update_trade_result(trade_pnl)
+
+            # Track per-symbol returns for correlation matrix
+            price = trade_data.get('price', 0)
+            if price > 0:
+                return_pct = trade_pnl / price
+                await self.risk_engine.update_symbol_return(symbol, return_pct)
             
             circuit_status = await self.risk_engine.get_circuit_breaker_status()
             risk_status = {
@@ -347,6 +354,14 @@ class SIQEEngine:
                 timeout=strict_timeout,
             )
             self._record_latency("execution", self.clock.now - t0)
+
+            if exec_result.filled_quantity > 0:
+                notional = exec_result.filled_quantity * exec_result.filled_price
+                self.risk_engine.update_symbol_position(
+                    symbol=decision.symbol,
+                    notional=notional,
+                    pnl=0.0,
+                )
 
             trade = Trade.from_decision(
                 decision,

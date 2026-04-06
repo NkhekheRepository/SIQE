@@ -432,6 +432,58 @@ async def emergency_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/portfolio/risk")
+async def portfolio_risk():
+    """Portfolio-level risk status with Monte Carlo VaR and correlation matrix."""
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        portfolio_status = await engine_instance.risk_engine.get_portfolio_risk_status()
+        return JSONResponse(content=portfolio_status)
+    except Exception as e:
+        logger.error(f"Error getting portfolio risk: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/correlation")
+async def portfolio_correlation():
+    """Rolling correlation matrix across all tracked symbols."""
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        corr = engine_instance.risk_engine.get_correlation_matrix()
+        return JSONResponse(content=corr)
+    except Exception as e:
+        logger.error(f"Error getting correlation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/positions")
+async def portfolio_positions():
+    """Current positions across all symbols."""
+    if engine_instance is None:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
+
+    try:
+        risk = engine_instance.risk_engine
+        limits = risk.check_portfolio_risk_limits()
+        return JSONResponse(content={
+            "positions": risk._symbol_positions,
+            "limits": limits,
+            "total_exposure": risk.get_portfolio_notional(),
+            "total_pnl": risk.get_portfolio_pnl(),
+            "current_equity": risk.current_equity,
+        })
+    except Exception as e:
+        logger.error(f"Error getting positions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting emergency status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/emergency/stop")
 async def emergency_stop(reason: str = "Manual emergency stop requested"):
     if engine_instance is None:
